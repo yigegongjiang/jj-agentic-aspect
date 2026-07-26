@@ -112,6 +112,7 @@ function digest(event: string, data: Json | null): string | null {
       return str(data.prompt) ?? str(data.user_input);
     case 'PreToolUse':
     case 'PostToolUse':
+    case 'PermissionRequest':
       return toolDigest(data);
     case 'PostToolUseFailure':
       return joinParts(toolDigest(data), str(data.error));
@@ -124,10 +125,15 @@ function digest(event: string, data: Json | null): string | null {
     case 'SessionEnd':
       return str(data.reason) && `reason: ${str(data.reason)}`;
     case 'PreCompact':
+    case 'PostCompact':
       return str(data.trigger) && `trigger: ${str(data.trigger)}`;
+    case 'SubagentStart':
+      return str(data.agent_type) ?? str(data.description) ?? str(data.prompt);
     case 'Stop':
     case 'SubagentStop':
       return str(data.last_assistant_message);
+    case 'StopFailure':
+      return str(data.error) ?? str(data.reason) ?? str(data.message);
     default:
       return null;
   }
@@ -171,16 +177,21 @@ function badgeClass(event: string): string {
       return 'bg-zinc-900 text-zinc-300 border-zinc-800';
     case 'PostToolUseFailure':
     case 'PermissionDenied':
+    case 'StopFailure':
       return 'bg-red-950/60 text-red-300 border-red-900';
     case 'Stop':
     case 'SubagentStop':
       return 'bg-green-950/60 text-green-300 border-green-900';
     case 'Notification':
+    case 'PermissionRequest':
       return 'bg-amber-950/60 text-amber-300 border-amber-900';
     case 'SessionStart':
     case 'SessionEnd':
       return 'bg-purple-950/60 text-purple-300 border-purple-900';
+    case 'SubagentStart':
+      return 'bg-cyan-950/60 text-cyan-300 border-cyan-900';
     case 'PreCompact':
+    case 'PostCompact':
       return 'bg-orange-950/60 text-orange-300 border-orange-900';
     default:
       return 'bg-zinc-900 text-zinc-400 border-zinc-800';

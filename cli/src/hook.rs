@@ -355,13 +355,18 @@ project (name) -- session (session_id, 来自宿主 agent) -- event (id=ULID, �
   "hooks": {
     "SessionStart":       [{ "hooks": [{ "type": "command", "command": "jj-agentic-aspect hook --source claude-code" }] }],
     "UserPromptSubmit":   [{ "hooks": [{ "type": "command", "command": "jj-agentic-aspect hook --source claude-code" }] }],
+    "PreToolUse":         [{ "hooks": [{ "type": "command", "command": "jj-agentic-aspect hook --source claude-code" }] }],
     "PostToolUse":        [{ "hooks": [{ "type": "command", "command": "jj-agentic-aspect hook --source claude-code" }] }],
     "PostToolUseFailure": [{ "hooks": [{ "type": "command", "command": "jj-agentic-aspect hook --source claude-code" }] }],
+    "PermissionRequest":  [{ "hooks": [{ "type": "command", "command": "jj-agentic-aspect hook --source claude-code" }] }],
     "PermissionDenied":   [{ "hooks": [{ "type": "command", "command": "jj-agentic-aspect hook --source claude-code" }] }],
     "Notification":       [{ "hooks": [{ "type": "command", "command": "jj-agentic-aspect hook --source claude-code" }] }],
-    "Stop":               [{ "hooks": [{ "type": "command", "command": "jj-agentic-aspect hook --source claude-code" }] }],
+    "SubagentStart":      [{ "hooks": [{ "type": "command", "command": "jj-agentic-aspect hook --source claude-code" }] }],
     "SubagentStop":       [{ "hooks": [{ "type": "command", "command": "jj-agentic-aspect hook --source claude-code" }] }],
+    "Stop":               [{ "hooks": [{ "type": "command", "command": "jj-agentic-aspect hook --source claude-code" }] }],
+    "StopFailure":        [{ "hooks": [{ "type": "command", "command": "jj-agentic-aspect hook --source claude-code" }] }],
     "PreCompact":         [{ "hooks": [{ "type": "command", "command": "jj-agentic-aspect hook --source claude-code" }] }],
+    "PostCompact":        [{ "hooks": [{ "type": "command", "command": "jj-agentic-aspect hook --source claude-code" }] }],
     "SessionEnd":         [{ "hooks": [{ "type": "command", "command": "jj-agentic-aspect hook --source claude-code" }] }]
   }
 }

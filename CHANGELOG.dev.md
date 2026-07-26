@@ -9,6 +9,15 @@
 
 > 历史 27 版 (≤ 0.8.23) 在双文件分界确立前写成, 原文照搬未回填; 用户向 / 开发向严格分界自 **0.8.24** 起执行.
 
+## [0.17.1] - 2026-07-26
+
+### Added
+
+- session 时间线覆盖更多 Claude Code hook 节点: 工具执行前 / 权限弹窗 / 子代理启动 / 回合异常中断 / 压缩完成 (`PreToolUse` / `PermissionRequest` / `SubagentStart` / `StopFailure` / `PostCompact`), dashboard 对应展示重点与配色; 推荐 hooks 配置样例同步更新 (见 `jj-agentic-aspect hook --help`)。
+  - ingest 本就事件无关 (任意 `hook_event_name` 原样落盘), worker 无事件白名单; 本次仅补展示与配置样例, 无 API/存储变更。
+  - `web/components/SessionDetail.tsx`: digest 增 `PermissionRequest`(=toolDigest) / `SubagentStart`(agent_type/description/prompt) / `StopFailure`(error/reason/message) / `PostCompact`(同 PreCompact); badge 增 amber(PermissionRequest) / cyan(SubagentStart) / red(StopFailure) / orange(PostCompact)。
+  - `cli/src/hook.rs`: HELP 推荐配置样例 10 -> 15 事件。
+
 ## [0.17.0] - 2026-07-26
 
 ### Changed

@@ -13,6 +13,12 @@
 
 > 历史 27 版 (≤ 0.8.23) 在双文件分界确立前写成, 含文件/函数级细节, 原文照搬未回填; 用户向精简严格自 **0.8.24** 起执行.
 
+## [0.17.1] - 2026-07-26
+
+### Added
+
+- session 时间线覆盖更多 Claude Code hook 节点: 工具执行前 / 权限弹窗 / 子代理启动 / 回合异常中断 / 压缩完成 (`PreToolUse` / `PermissionRequest` / `SubagentStart` / `StopFailure` / `PostCompact`), dashboard 对应展示重点与配色; 推荐 hooks 配置样例同步更新 (见 `jj-agentic-aspect hook --help`)。
+
 ## [0.17.0] - 2026-07-26
 
 ### Changed
