@@ -67,6 +67,7 @@ export interface SessionSummary {
   first_at: number;
   last_at: number;
   first_prompt: string | null;
+  last_event: string;
 }
 
 export interface Status {

@@ -1,6 +1,7 @@
 'use client';
 
-import { fmtDuration, fmtTime } from '@/lib/format';
+import { fmtDuration, fmtRelative } from '@/lib/format';
+import { STATE_STYLE, sessionState } from '@/lib/session';
 import type { SessionSummary } from '@/lib/types';
 
 interface Props {
@@ -51,6 +52,7 @@ function SessionCard({
   onOpen: () => void;
   onDelete: () => void;
 }) {
+  const state = STATE_STYLE[sessionState(session.last_event, session.last_at)];
   return (
     <div
       role="button"
@@ -59,15 +61,20 @@ function SessionCard({
       onKeyDown={(e) => {
         if (e.key === 'Enter' || e.key === ' ') onOpen();
       }}
-      className="w-full min-w-0 text-left rounded-lg border border-zinc-800 bg-zinc-950 hover:border-zinc-600 transition p-3 flex flex-col gap-2 cursor-pointer"
+      title="open session timeline"
+      className="w-full min-w-0 text-left rounded-lg border border-zinc-800 bg-zinc-950 hover:border-zinc-500 hover:bg-zinc-900/50 transition p-3 flex flex-col gap-2 cursor-pointer"
     >
       <div className="text-sm leading-snug text-zinc-100 whitespace-pre-wrap break-words line-clamp-4">
         {session.first_prompt ?? <span className="text-zinc-500 italic">(no prompt)</span>}
       </div>
       <div className="mt-auto pt-1.5 flex items-center justify-between gap-2 border-t border-zinc-900">
-        <span className="text-[11px] text-zinc-400 font-mono truncate">
-          <span className="text-zinc-500">{session.source}</span> · {fmtTime(session.first_at)} ·{' '}
-          {fmtDuration(session.last_at - session.first_at)} · {session.events_count} events
+        <span className="text-[11px] text-zinc-400 font-mono truncate flex items-center gap-1.5 min-w-0">
+          <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${state.dot}`} />
+          <span className={`${state.text} shrink-0`}>{state.label}</span>
+          <span className="truncate">
+            · {fmtRelative(session.last_at)} · <span className="text-zinc-500">{session.source}</span> ·{' '}
+            {fmtDuration(session.last_at - session.first_at)} · {session.events_count} ev
+          </span>
         </span>
         <div className="flex items-center gap-0.5 shrink-0">
           <span className="text-[10px] text-zinc-600 font-mono" title={session.session_id}>

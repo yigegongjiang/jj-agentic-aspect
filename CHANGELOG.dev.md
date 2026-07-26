@@ -9,6 +9,20 @@
 
 > 历史 27 版 (≤ 0.8.23) 在双文件分界确立前写成, 原文照搬未回填; 用户向 / 开发向严格分界自 **0.8.24** 起执行.
 
+## [0.19.0] - 2026-07-26
+
+### Changed
+
+- session 时间线信息分层重构: 按对话轮次分组, 用户 prompt (蓝) / assistant 回复 (绿) / 错误 (红) 大块高亮; 工具调用前后事件合并为单行 (工具 + 关键参数 + 耗时 + 成败), 点击展开原始 JSON。
+  - `web/components/SessionDetail.tsx`: 重写为 buildTimeline (UserPromptSubmit 开新 turn; Pre/Post/PermissionDenied 按 `tool_use_id` 配对, 无配对独立成行); 耗时取 `duration_ms`, 缺失回退事件间隔; 非末轮 >20 步默认折叠 (失败/Stop/PermissionDenied 常显); 末轮无 Stop 且 running → working… 指示。
+- session 详情顶部新增概览条: 运行状态 (running/idle/ended/error) / model / 时长 / 轮次数 / 工具数 / 错误数一眼可见。
+  - `web/lib/session.ts`: 新增 `sessionState(lastEvent, lastAt)` (SessionEnd→ended; Stop/SubagentStop/SessionStart/PermissionRequest/Notification→idle; 5min 内活跃→running; 失败事件收尾且停更→error) + `STATE_STYLE`, 卡片/详情共用。
+- session 卡片新增实时状态点与最后活跃时间, 列表页即可分辨会话在跑 / 空闲 / 已结束 / 出错。
+  - `worker/src/index.ts`: `GET /projects/:name/sessions` 返回追加 `last_event` (与 first_prompt 同模式关联子查询, additive 兼容); `web/lib/types.ts` SessionSummary 同步。
+  - `web/components/SessionsView.tsx`: 卡片脚注 = 状态点 + `fmtRelative(last_at)` + source/时长/事件数。
+- 可点击处显式标注: 可展开行尾常显 ▸/▾ 指示, 长文本块下方 ▾ more / ▴ less 按钮。
+  - `web/components/SessionDetail.tsx`: ToolRow/MinorEventRow 行尾 chevron (group-hover 提亮); ExpandableBlock clampable 时渲染显式 more/less 按钮; 卡片 hover 加背景变化 + title。
+
 ## [0.18.1] - 2026-07-26
 
 ### Fixed

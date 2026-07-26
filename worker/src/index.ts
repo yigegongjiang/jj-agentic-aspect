@@ -79,6 +79,7 @@ interface SessionSummary {
   first_at: number;
   last_at: number;
   first_prompt: string | null;
+  last_event: string;
 }
 
 const ASK_LIMIT_DEFAULT = 3;
@@ -1141,7 +1142,8 @@ app.post('/projects/:name/statuses', async (c) => {
 // via json_extract with a json_valid guard — a client-side-truncated body is
 // still valid JSON, but never let a malformed row break the whole listing.
 // Field name: newer Claude Code sends `user_input`, older sends `prompt`;
-// COALESCE covers both.
+// COALESCE covers both. last_event = the session's most recent event name, so
+// the dashboard can tell a finished session (SessionEnd/Stop) from a live one.
 app.get('/projects/:name/sessions', async (c) => {
   const name = c.req.param('name');
   const project = await readProject(c.env.DB, name);
@@ -1172,7 +1174,13 @@ app.get('/projects/:name/sessions', async (c) => {
                   AND s2.session_id = s.session_id
                   AND s2.event = 'UserPromptSubmit'
                 ORDER BY s2.id
-                LIMIT 1) AS first_prompt
+                LIMIT 1) AS first_prompt,
+              (SELECT s3.event
+                 FROM statuses s3
+                WHERE s3.project_id = s.project_id
+                  AND s3.session_id = s.session_id
+                ORDER BY s3.id DESC
+                LIMIT 1) AS last_event
          FROM statuses s
         WHERE s.project_id = ?
         GROUP BY s.session_id

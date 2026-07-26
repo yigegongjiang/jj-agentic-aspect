@@ -3,7 +3,8 @@
 import { useCallback, useEffect, useState } from 'react';
 
 import { ApiError, api } from '@/lib/api';
-import { fmtDuration, fmtTime } from '@/lib/format';
+import { fmtDuration, fmtRelative, fmtTime } from '@/lib/format';
+import { STATE_STYLE, sessionState } from '@/lib/session';
 import type { Status } from '@/lib/types';
 
 interface Props {
@@ -12,10 +13,12 @@ interface Props {
   onUnauthorized: () => void;
 }
 
-// 渲染策略: 每条事件提炼「重点」(prompt / tool_name / 关键参数) 直接展示;
-// 原始 hook JSON 折叠在 raw 里; 数据量少 (阈值内) 时默认展开全量渲染。
-const AUTO_EXPAND_BODY_LEN = 400;
-
+// 渲染策略: 信息分层, 而非平铺原始事件。
+// - 按 turn 分组: UserPromptSubmit 开新轮, prompt(蓝) 与 assistant 回复(绿) 是重点, 大块展示
+// - Pre/PostToolUse 按 tool_use_id 配对合并成一行: 工具名 + 关键参数 + 时长 + 成败
+// - 错误 (PostToolUseFailure/PermissionDenied/StopFailure) 红色常显, 不折叠
+// - 顶部概览条: 状态 / model / 时长 / 轮次 / 工具数 / 错误数, 一眼知进度
+// - 任何一行点击可展开原始 hook JSON
 export default function SessionDetail({ project, sessionId, onUnauthorized }: Props) {
   const [events, setEvents] = useState<Status[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -58,37 +61,174 @@ export default function SessionDetail({ project, sessionId, onUnauthorized }: Pr
     return <div className="text-xs text-zinc-500">loading…</div>;
   }
 
+  if (events.length === 0) {
+    return (
+      <div className="space-y-3">
+        <span className="text-xs font-mono text-zinc-500 break-all">{sessionId}</span>
+        {error && <div className="text-xs text-red-400">{error}</div>}
+        <div className="text-sm text-zinc-400 italic px-4 py-8 text-center">(session not found)</div>
+      </div>
+    );
+  }
+
+  const parsed = events.map((s) => ({ status: s, data: parseBody(s.body) }));
+  const { turns, toolCount, errorCount } = buildTimeline(parsed);
+  const promptTurns = turns.filter((t) => t.prompt !== null).length;
+  const first = events[0];
+  const last = events[events.length - 1];
+  const state = sessionState(last.event, last.created_at);
+  const stateStyle = STATE_STYLE[state];
+  const model = parsed.map((p) => str(p.data?.model)).find((m) => m !== null) ?? null;
+  let promptNo = 0;
+
   return (
     <div className="space-y-3">
-      <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
-        <span className="text-xs font-mono text-zinc-500 break-all">{sessionId}</span>
-        {events.length > 0 && (
-          <span className="text-xs text-zinc-400 font-mono">
-            {events[0].source} · {fmtTime(events[0].created_at)} ·{' '}
-            {fmtDuration(events[events.length - 1].created_at - events[0].created_at)} ·{' '}
-            {events.length} events
-          </span>
+      {/* 概览条: 进度与关键指标一眼可见 */}
+      <div className="rounded-lg border border-zinc-800 bg-zinc-950 px-3 py-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] font-mono">
+        <span className={`flex items-center gap-1.5 ${stateStyle.text}`}>
+          <span className={`w-2 h-2 rounded-full ${stateStyle.dot}`} />
+          {stateStyle.label}
+        </span>
+        <span className="text-zinc-400">{first.source}</span>
+        {model && <span className="text-zinc-400">{model}</span>}
+        <span className="text-zinc-500">{fmtTime(first.created_at)}</span>
+        <span className="text-zinc-500">{fmtDuration(last.created_at - first.created_at)}</span>
+        <span className="text-zinc-400">
+          {promptTurns} {promptTurns === 1 ? 'turn' : 'turns'} · {toolCount} tools ·{' '}
+          {events.length} events
+        </span>
+        {errorCount > 0 && (
+          <span className="text-red-300 font-semibold">{errorCount} errors</span>
         )}
+        {state === 'running' && (
+          <span className="text-green-400/80">active {fmtRelative(last.created_at)}</span>
+        )}
+        <span className="ml-auto text-zinc-700 break-all" title={sessionId}>
+          {sessionId.slice(0, 8)}
+        </span>
       </div>
 
       {error && <div className="text-xs text-red-400">{error}</div>}
 
-      {events.length === 0 ? (
-        <div className="text-sm text-zinc-400 italic px-4 py-8 text-center">(session not found)</div>
-      ) : (
-        <ol className="space-y-1.5">
-          {events.map((ev) => (
-            <EventRow key={ev.id} status={ev} />
-          ))}
-        </ol>
-      )}
+      <div className="space-y-4">
+        {turns.map((turn, ti) => {
+          if (turn.prompt) promptNo += 1;
+          if (!turn.prompt && turn.items.length === 0) return null;
+          return (
+            <TurnBlock
+              key={turn.prompt?.status.id ?? `pre-${ti}`}
+              turn={turn}
+              no={turn.prompt ? promptNo : null}
+              isLast={ti === turns.length - 1}
+              live={state === 'running'}
+            />
+          );
+        })}
+      </div>
     </div>
   );
 }
 
-// ---------- per-event digest ----------
+// ---------- timeline model ----------
 
 type Json = Record<string, unknown>;
+
+interface PE {
+  status: Status;
+  data: Json | null;
+}
+
+interface ToolItem {
+  kind: 'tool';
+  key: string;
+  pre: PE | null;
+  post: PE | null; // PostToolUse / PostToolUseFailure / PermissionDenied
+  failed: boolean;
+  at: number;
+  durationMs: number | null;
+}
+
+interface EventItem {
+  kind: 'event';
+  key: string;
+  at: number;
+  ev: PE;
+}
+
+type Item = ToolItem | EventItem;
+
+interface Turn {
+  prompt: PE | null; // UserPromptSubmit; null = 首个 prompt 前的开场事件
+  items: Item[];
+}
+
+function buildTimeline(events: PE[]): { turns: Turn[]; toolCount: number; errorCount: number } {
+  const turns: Turn[] = [];
+  let current: Turn = { prompt: null, items: [] };
+  turns.push(current);
+  // tool_use_id → 未完成的调用; Post 到达时配对合并
+  const pending = new Map<string, ToolItem>();
+  let toolCount = 0;
+  let errorCount = 0;
+
+  for (const pe of events) {
+    const e = pe.status.event;
+    if (e === 'UserPromptSubmit') {
+      current = { prompt: pe, items: [] };
+      turns.push(current);
+      continue;
+    }
+    if (e === 'PreToolUse') {
+      const item: ToolItem = {
+        kind: 'tool',
+        key: pe.status.id,
+        pre: pe,
+        post: null,
+        failed: false,
+        at: pe.status.created_at,
+        durationMs: null,
+      };
+      toolCount += 1;
+      const tuid = str(pe.data?.tool_use_id);
+      if (tuid) pending.set(tuid, item);
+      current.items.push(item);
+      continue;
+    }
+    if (e === 'PostToolUse' || e === 'PostToolUseFailure' || e === 'PermissionDenied') {
+      const failed = e !== 'PostToolUse';
+      if (failed) errorCount += 1;
+      const tuid = str(pe.data?.tool_use_id);
+      const open = tuid ? pending.get(tuid) : undefined;
+      if (open && open.post === null) {
+        open.post = pe;
+        open.failed = failed;
+        const d = pe.data?.duration_ms;
+        open.durationMs =
+          typeof d === 'number' ? d : pe.status.created_at - open.at;
+        if (tuid) pending.delete(tuid);
+      } else {
+        // 无配对 Pre (旧数据 / 缺 hook): 独立成行
+        toolCount += 1;
+        const d = pe.data?.duration_ms;
+        current.items.push({
+          kind: 'tool',
+          key: pe.status.id,
+          pre: null,
+          post: pe,
+          failed,
+          at: pe.status.created_at,
+          durationMs: typeof d === 'number' ? d : null,
+        });
+      }
+      continue;
+    }
+    if (e === 'StopFailure') errorCount += 1;
+    current.items.push({ kind: 'event', key: pe.status.id, at: pe.status.created_at, ev: pe });
+  }
+  return { turns, toolCount, errorCount };
+}
+
+// ---------- per-event digest ----------
 
 function parseBody(body: string): Json | null {
   try {
@@ -110,18 +250,12 @@ function digest(event: string, data: Json | null): string | null {
   switch (event) {
     case 'UserPromptSubmit':
       return str(data.prompt) ?? str(data.user_input);
-    case 'PreToolUse':
-    case 'PostToolUse':
-    case 'PermissionRequest':
-      return toolDigest(data);
-    case 'PostToolUseFailure':
-      return joinParts(toolDigest(data), str(data.error));
-    case 'PermissionDenied':
-      return joinParts(toolDigest(data), str(data.denial_reason));
     case 'Notification':
       return str(data.message);
+    case 'PermissionRequest':
+      return joinParts(toolName(data), toolDigest(data));
     case 'SessionStart':
-      return str(data.source) && `source: ${str(data.source)}`;
+      return joinParts(str(data.source) && `source: ${str(data.source)}`, str(data.model));
     case 'SessionEnd':
       return str(data.reason) && `reason: ${str(data.reason)}`;
     case 'PreCompact':
@@ -141,16 +275,16 @@ function digest(event: string, data: Json | null): string | null {
 
 function joinParts(...parts: Array<string | null>): string | null {
   const kept = parts.filter((p): p is string => p !== null);
-  return kept.length > 0 ? kept.join('\n') : null;
+  return kept.length > 0 ? kept.join(' · ') : null;
 }
 
 // 工具调用重点: 各工具最能代表这次调用的一个参数。
-function toolDigest(data: Json): string | null {
+function toolDigest(data: Json | null): string | null {
+  if (!data) return null;
   const input = (typeof data.tool_input === 'object' && data.tool_input !== null
     ? data.tool_input
     : {}) as Json;
-  const parts: string[] = [];
-  const primary =
+  return (
     str(input.command) ??
     str(input.file_path) ??
     str(input.pattern) ??
@@ -158,28 +292,237 @@ function toolDigest(data: Json): string | null {
     str(input.query) ??
     str(input.description) ??
     str(input.prompt) ??
-    str(input.skill);
-  if (primary) parts.push(primary);
-  return parts.length > 0 ? parts.join(' ') : null;
+    str(input.skill)
+  );
 }
 
 function toolName(data: Json | null): string | null {
   return data ? str(data.tool_name) : null;
 }
 
-// badge 配色: 人看时间线时靠颜色扫读事件类型。
+function toolError(data: Json | null): string | null {
+  if (!data) return null;
+  return str(data.error) ?? str(data.denial_reason) ?? str(data.message);
+}
+
+function fmtMs(ms: number): string {
+  if (ms < 1000) return `${ms}ms`;
+  if (ms < 10000) return `${(ms / 1000).toFixed(1)}s`;
+  return fmtDuration(ms);
+}
+
+function clock(ms: number): string {
+  return fmtTime(ms).slice(11);
+}
+
+function prettyJson(pe: PE): string {
+  return pe.data ? JSON.stringify(pe.data, null, 2) : pe.status.body;
+}
+
+// ---------- rendering ----------
+
+// 单个 turn 内工具行超过此数且非最后一轮 → 默认折叠 (prompt/回复/错误仍常显)
+const TURN_COLLAPSE_THRESHOLD = 20;
+
+// 折叠态下仍必须可见的重要事件
+function isKeyEvent(item: Item): boolean {
+  if (item.kind === 'tool') return item.failed;
+  const e = item.ev.status.event;
+  return e === 'Stop' || e === 'StopFailure' || e === 'PermissionDenied';
+}
+
+function TurnBlock({
+  turn,
+  no,
+  isLast,
+  live,
+}: {
+  turn: Turn;
+  no: number | null;
+  isLast: boolean;
+  live: boolean;
+}) {
+  const collapsible = !isLast && turn.items.length > TURN_COLLAPSE_THRESHOLD;
+  const [open, setOpen] = useState(!collapsible);
+  const shown = open ? turn.items : turn.items.filter(isKeyEvent);
+  const hidden = turn.items.length - shown.length;
+  const turnEnd = turn.items.length > 0 ? turn.items[turn.items.length - 1].at : null;
+  const turnStart = turn.prompt?.status.created_at ?? turn.items[0]?.at ?? null;
+
+  return (
+    <section>
+      {turn.prompt && (
+        <PromptBlock
+          pe={turn.prompt}
+          no={no ?? 0}
+          duration={
+            turnStart !== null && turnEnd !== null && turnEnd > turnStart
+              ? fmtDuration(turnEnd - turnStart)
+              : null
+          }
+        />
+      )}
+      {(turn.items.length > 0 || (turn.prompt && isLast)) && (
+        <div className={`space-y-0.5 ${turn.prompt ? 'mt-1.5 ml-1.5 pl-3 border-l border-zinc-800/80' : ''}`}>
+          {collapsible && (
+            <button
+              onClick={() => setOpen((v) => !v)}
+              className="text-[11px] font-mono text-zinc-500 hover:text-zinc-300 transition py-0.5"
+            >
+              {open ? '▾' : '▸'} {turn.items.length} steps
+              {!open && hidden > 0 ? ` (${hidden} hidden)` : ''}
+            </button>
+          )}
+          {shown.map((item) =>
+            item.kind === 'tool' ? (
+              <ToolRow key={item.key} item={item} live={live && isLast} />
+            ) : (
+              <EventBlock key={item.key} pe={item.ev} />
+            ),
+          )}
+          {/* 最后一轮还没有 Stop → 正在工作 */}
+          {isLast &&
+            live &&
+            !turn.items.some(
+              (it) => it.kind === 'event' && it.ev.status.event === 'Stop',
+            ) && (
+              <div className="flex items-center gap-2 py-1 text-[11px] font-mono text-green-400/80">
+                <span className="w-1.5 h-1.5 rounded-full bg-green-400 animate-pulse" />
+                working…
+              </div>
+            )}
+        </div>
+      )}
+    </section>
+  );
+}
+
+// 用户 prompt: 蓝色重点块
+function PromptBlock({ pe, no, duration }: { pe: PE; no: number; duration: string | null }) {
+  const text = digest('UserPromptSubmit', pe.data);
+  return (
+    <ExpandableBlock
+      pe={pe}
+      text={text}
+      clampClass="line-clamp-6"
+      className="border-l-2 border-blue-500 bg-blue-950/25 rounded-r-md"
+      header={
+        <>
+          <span className="text-blue-300 font-semibold">#{no} prompt</span>
+          <span className="text-zinc-500">{clock(pe.status.created_at)}</span>
+          {duration && <span className="text-zinc-500">→ {duration}</span>}
+        </>
+      }
+      textClass="text-zinc-50"
+    />
+  );
+}
+
+// 工具调用: 一行 = 时间 + 成败 + 工具名 + 关键参数 + 时长; 点击展开 pre/post raw
+function ToolRow({ item, live }: { item: ToolItem; live: boolean }) {
+  const [open, setOpen] = useState(false);
+  const data = item.pre?.data ?? item.post?.data ?? null;
+  const name = toolName(data) ?? 'tool';
+  const line = (toolDigest(data) ?? '').split('\n')[0];
+  const running = item.post === null;
+  const err = item.failed ? toolError(item.post?.data ?? null) : null;
+
+  return (
+    <div>
+      <div
+        role="button"
+        tabIndex={0}
+        onClick={() => setOpen((v) => !v)}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' || e.key === ' ') setOpen((v) => !v);
+        }}
+        className="group flex items-baseline gap-2 py-px px-1 -mx-1 rounded cursor-pointer hover:bg-zinc-900/70 transition min-w-0"
+      >
+        <span className="text-[10px] font-mono text-zinc-600 shrink-0">{clock(item.at)}</span>
+        {running ? (
+          <span
+            className={`w-1.5 h-1.5 rounded-full shrink-0 self-center ${live ? 'bg-cyan-400 animate-pulse' : 'bg-zinc-700'}`}
+          />
+        ) : item.failed ? (
+          <span className="text-[11px] font-mono text-red-400 shrink-0 font-bold">✗</span>
+        ) : (
+          <span className="text-[11px] font-mono text-zinc-600 shrink-0">✓</span>
+        )}
+        <span
+          className={`text-xs font-mono shrink-0 ${item.failed ? 'text-red-300' : 'text-zinc-300'}`}
+        >
+          {name}
+        </span>
+        <span className="text-xs text-zinc-500 truncate min-w-0 flex-1">{line}</span>
+        {item.durationMs !== null && item.durationMs >= 0 && (
+          <span className="text-[10px] font-mono text-zinc-600 shrink-0">
+            {fmtMs(item.durationMs)}
+          </span>
+        )}
+        <span className="text-[10px] font-mono text-zinc-600 group-hover:text-zinc-300 transition shrink-0">
+          {open ? '▾' : '▸'}
+        </span>
+      </div>
+      {err && (
+        <div className="ml-6 text-xs text-red-300/90 whitespace-pre-wrap break-words line-clamp-4">
+          {err}
+        </div>
+      )}
+      {open && (
+        <div className="ml-6 my-1 space-y-1">
+          {item.pre && <RawPre label="PreToolUse" pe={item.pre} />}
+          {item.post && <RawPre label={item.post.status.event} pe={item.post} />}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// 非工具事件: Stop=assistant 回复(绿), StopFailure(红), 开场/收尾=灰单行, 其余=badge 行
+function EventBlock({ pe }: { pe: PE }) {
+  const e = pe.status.event;
+  if (e === 'Stop') {
+    return (
+      <ExpandableBlock
+        pe={pe}
+        text={digest(e, pe.data)}
+        clampClass="line-clamp-[12]"
+        className="border-l-2 border-green-500 bg-green-950/20 rounded-r-md my-1.5"
+        header={
+          <>
+            <span className="text-green-300 font-semibold">assistant</span>
+            <span className="text-zinc-500">{clock(pe.status.created_at)}</span>
+          </>
+        }
+        textClass="text-zinc-100"
+      />
+    );
+  }
+  if (e === 'StopFailure') {
+    return (
+      <ExpandableBlock
+        pe={pe}
+        text={digest(e, pe.data)}
+        clampClass="line-clamp-[12]"
+        className="border-l-2 border-red-500 bg-red-950/25 rounded-r-md my-1.5"
+        header={
+          <>
+            <span className="text-red-300 font-semibold">stop failure</span>
+            <span className="text-zinc-500">{clock(pe.status.created_at)}</span>
+          </>
+        }
+        textClass="text-red-200"
+      />
+    );
+  }
+  return <MinorEventRow pe={pe} />;
+}
+
+// badge 配色: 人扫时间线时靠颜色识别事件类型。
 function badgeClass(event: string): string {
   switch (event) {
-    case 'UserPromptSubmit':
-      return 'bg-blue-950/60 text-blue-300 border-blue-900';
-    case 'PostToolUse':
-    case 'PreToolUse':
-      return 'bg-zinc-900 text-zinc-300 border-zinc-800';
-    case 'PostToolUseFailure':
     case 'PermissionDenied':
-    case 'StopFailure':
       return 'bg-red-950/60 text-red-300 border-red-900';
-    case 'Stop':
     case 'SubagentStop':
       return 'bg-green-950/60 text-green-300 border-green-900';
     case 'Notification':
@@ -187,7 +530,7 @@ function badgeClass(event: string): string {
       return 'bg-amber-950/60 text-amber-300 border-amber-900';
     case 'SessionStart':
     case 'SessionEnd':
-      return 'bg-purple-950/60 text-purple-300 border-purple-900';
+      return 'bg-zinc-900 text-zinc-500 border-zinc-800';
     case 'SubagentStart':
       return 'bg-cyan-950/60 text-cyan-300 border-cyan-900';
     case 'PreCompact':
@@ -198,46 +541,119 @@ function badgeClass(event: string): string {
   }
 }
 
-function EventRow({ status }: { status: Status }) {
-  const data = parseBody(status.body);
-  const line = digest(status.event, data);
-  const tool = toolName(data);
-  // 数据量少 → 直接全渲染; 大 payload 折叠, 点击展开。
-  const [showRaw, setShowRaw] = useState(false);
-  const small = status.body.length <= AUTO_EXPAND_BODY_LEN;
-  const expanded = showRaw || (small && line === null);
-
-  const pretty = data ? JSON.stringify(data, null, 2) : status.body;
-
+function MinorEventRow({ pe }: { pe: PE }) {
+  const [open, setOpen] = useState(false);
+  const e = pe.status.event;
+  const line = digest(e, pe.data);
   return (
-    <li className="rounded-md border border-zinc-800 bg-zinc-950 px-3 py-2">
-      <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
-        <span className="text-[10px] font-mono text-zinc-500 shrink-0">
-          {fmtTime(status.created_at).slice(11)}
+    <div>
+      <div
+        role="button"
+        tabIndex={0}
+        onClick={() => setOpen((v) => !v)}
+        onKeyDown={(ev) => {
+          if (ev.key === 'Enter' || ev.key === ' ') setOpen((v) => !v);
+        }}
+        className="group flex items-baseline gap-2 py-px px-1 -mx-1 rounded cursor-pointer hover:bg-zinc-900/70 transition min-w-0"
+      >
+        <span className="text-[10px] font-mono text-zinc-600 shrink-0">
+          {clock(pe.status.created_at)}
         </span>
         <span
-          className={`text-[10px] font-mono px-1.5 py-0.5 rounded border shrink-0 ${badgeClass(status.event)}`}
+          className={`text-[10px] font-mono px-1.5 py-0.5 rounded border shrink-0 ${badgeClass(e)}`}
         >
-          {status.event}
-          {tool ? ` · ${tool}` : ''}
+          {e}
         </span>
-        <button
-          onClick={() => setShowRaw((v) => !v)}
-          className="ml-auto text-[10px] text-zinc-600 hover:text-zinc-300 transition shrink-0"
-        >
-          {expanded ? '× raw' : '▾ raw'}
-        </button>
+        <span className="text-xs text-zinc-400 truncate min-w-0 flex-1">
+          {line?.split('\n')[0] ?? ''}
+        </span>
+        <span className="text-[10px] font-mono text-zinc-600 group-hover:text-zinc-300 transition shrink-0">
+          {open ? '▾' : '▸'}
+        </span>
       </div>
-      {line && (
-        <div className="mt-1 text-sm leading-snug text-zinc-100 whitespace-pre-wrap break-words line-clamp-[12]">
-          {line}
+      {open && (
+        <div className="ml-6 my-1">
+          <RawPre label={e} pe={pe} />
         </div>
       )}
-      {expanded && (
+    </div>
+  );
+}
+
+// 重点内容块 (prompt / assistant 回复): 默认 clamp, 点击展开全文, raw 按钮看原始 JSON
+function ExpandableBlock({
+  pe,
+  text,
+  clampClass,
+  className,
+  header,
+  textClass,
+}: {
+  pe: PE;
+  text: string | null;
+  clampClass: string;
+  className: string;
+  header: React.ReactNode;
+  textClass: string;
+}) {
+  const [full, setFull] = useState(false);
+  const [raw, setRaw] = useState(false);
+  const clampable = text !== null && (text.length > 400 || text.split('\n').length > 6);
+  return (
+    <div className={`px-3 py-2 ${className}`}>
+      <div className="flex items-baseline gap-2 text-[10px] font-mono">
+        {header}
+        <button
+          onClick={() => setRaw((v) => !v)}
+          className="ml-auto text-zinc-600 hover:text-zinc-300 transition shrink-0"
+        >
+          {raw ? '× raw' : '▾ raw'}
+        </button>
+      </div>
+      {text !== null && (
+        <>
+          <div
+            role={clampable ? 'button' : undefined}
+            tabIndex={clampable ? 0 : undefined}
+            onClick={clampable ? () => setFull((v) => !v) : undefined}
+            onKeyDown={
+              clampable
+                ? (e) => {
+                    if (e.key === 'Enter' || e.key === ' ') setFull((v) => !v);
+                  }
+                : undefined
+            }
+            className={`mt-1 text-sm leading-snug whitespace-pre-wrap break-words ${textClass} ${full ? '' : clampClass} ${clampable ? 'cursor-pointer' : ''}`}
+          >
+            {text}
+          </div>
+          {/* 明示可展开: 隐形点击区之外给一个常显按钮 */}
+          {clampable && (
+            <button
+              onClick={() => setFull((v) => !v)}
+              className="mt-1 text-[10px] font-mono text-zinc-500 hover:text-zinc-200 transition"
+            >
+              {full ? '▴ less' : '▾ more'}
+            </button>
+          )}
+        </>
+      )}
+      {(raw || text === null) && (
         <pre className="mt-1.5 text-[11px] leading-relaxed text-zinc-400 bg-zinc-900/60 rounded p-2 overflow-x-auto max-h-96 overflow-y-auto whitespace-pre-wrap break-all">
-          {pretty}
+          {prettyJson(pe)}
         </pre>
       )}
-    </li>
+    </div>
+  );
+}
+
+function RawPre({ label, pe }: { label: string; pe: PE }) {
+  return (
+    <div>
+      <div className="text-[10px] font-mono text-zinc-600">{label}</div>
+      <pre className="text-[11px] leading-relaxed text-zinc-400 bg-zinc-900/60 rounded p-2 overflow-x-auto max-h-96 overflow-y-auto whitespace-pre-wrap break-all">
+        {prettyJson(pe)}
+      </pre>
+    </div>
   );
 }
