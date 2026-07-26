@@ -1,12 +1,12 @@
 // `hook` subcommand: agent hook session-event logging.
 //
 // `jj-agentic-aspect hook --source <s>` is wired into the host agent's hooks
-// (e.g. Claude Code settings.json) and runs on every hook event. It reads the
-// event JSON from stdin, shrinks oversized fields, and uploads to the worker.
+// (e.g. Claude Code settings.json / Codex hooks.json) and runs on every hook
+// event. It reads the event JSON from stdin, shrinks oversized fields, and
+// uploads to the worker.
 // It is a pure observer: it always exits 0 and never writes to stdout, so a
 // broken config / network / payload can never block or pollute the hosting
-// session. `--source` names the emitting agent (claude-code today; codex etc.
-// later) and defaults to claude-code.
+// session. `--source` names the emitting agent and defaults to claude-code.
 use std::time::Duration;
 
 use crate::{
@@ -22,7 +22,7 @@ const MAX_SOURCE_LEN: usize = 64;
 const SESSION_LIST_LIMIT_DEFAULT: u32 = 50;
 const SESSION_LIST_LIMIT_MAX: u32 = 200;
 
-/// Default event source. The only emitter today; more (codex, ...) later.
+/// Default event source preserves the original Claude Code-only CLI contract.
 const DEFAULT_SOURCE: &str = "claude-code";
 
 // Upload budget (UTF-16 units), safely under the worker's MAX_BODY_LEN after
@@ -328,7 +328,7 @@ const HELP: &str = r#"jj-agentic-aspect hook {VERSION}
 
 # TLDR
 hook: 落盘 agent hook 的 session 运行事件. 层级 project -> session -> event; 每条事件带 source (哪个 agent 上报).
-`jj-agentic-aspect hook --source claude-code` 挂进 agent hooks 后自动上报, 事后经 dashboard 按 session 时间线回看.
+`--source claude-code` / `--source codex` 挂进对应 agent hooks 后自动上报, 事后经 dashboard 按 session 时间线回看.
 
   jj-agentic-aspect hook [--source <s>]           # hook 专用: stdin 读事件 JSON, 静默上报, 永远 exit 0; source 默认 claude-code
   jj-agentic-aspect hook sessions <project>       # 该项目的 session 摘要列表
@@ -350,7 +350,7 @@ project (name) -- session (session_id, 来自宿主 agent) -- event (id=ULID, �
 - 永远 exit 0, 不写 stdout, 上报限时 10s: 任何失败静默丢弃, 绝不干扰宿主 session.
 - 未知 flag 静默忽略 (hook 行配置错误也不得影响宿主).
 
-# 配置 (Claude Code: ~/.claude/settings.json; 事件集可按需增删, 未知事件同样原样落盘)
+# 配置: Claude Code (~/.claude/settings.json; 事件集可按需增删, 未知事件同样原样落盘)
 {
   "hooks": {
     "SessionStart":       [{ "hooks": [{ "type": "command", "command": "jj-agentic-aspect hook --source claude-code" }] }],
@@ -368,6 +368,24 @@ project (name) -- session (session_id, 来自宿主 agent) -- event (id=ULID, �
     "PreCompact":         [{ "hooks": [{ "type": "command", "command": "jj-agentic-aspect hook --source claude-code" }] }],
     "PostCompact":        [{ "hooks": [{ "type": "command", "command": "jj-agentic-aspect hook --source claude-code" }] }],
     "SessionEnd":         [{ "hooks": [{ "type": "command", "command": "jj-agentic-aspect hook --source claude-code" }] }]
+  }
+}
+
+# 配置: Codex (~/.codex/hooks.json; 首次启动按提示 review + trust)
+{
+  "description": "Record Codex sessions in jj-agentic-aspect.",
+  "hooks": {
+    "SessionStart":      [{ "hooks": [{ "type": "command", "command": "jj-agentic-aspect hook --source codex" }] }],
+    "UserPromptSubmit":  [{ "hooks": [{ "type": "command", "command": "jj-agentic-aspect hook --source codex" }] }],
+    "PreToolUse":        [{ "hooks": [{ "type": "command", "command": "jj-agentic-aspect hook --source codex" }] }],
+    "PostToolUse":       [{ "hooks": [{ "type": "command", "command": "jj-agentic-aspect hook --source codex" }] }],
+    "PermissionRequest": [{ "hooks": [{ "type": "command", "command": "jj-agentic-aspect hook --source codex" }] }],
+    "SubagentStart":     [{ "hooks": [{ "type": "command", "command": "jj-agentic-aspect hook --source codex" }] }],
+    "SubagentStop":      [{ "hooks": [{ "type": "command", "command": "jj-agentic-aspect hook --source codex" }] }],
+    "Stop":              [{ "hooks": [{ "type": "command", "command": "jj-agentic-aspect hook --source codex" }] }],
+    "PreCompact":        [{ "hooks": [{ "type": "command", "command": "jj-agentic-aspect hook --source codex" }] }],
+    "PostCompact":       [{ "hooks": [{ "type": "command", "command": "jj-agentic-aspect hook --source codex" }] }],
+    "SessionEnd":        [{ "hooks": [{ "type": "command", "command": "jj-agentic-aspect hook --source codex", "timeout": 3 }] }]
   }
 }
 

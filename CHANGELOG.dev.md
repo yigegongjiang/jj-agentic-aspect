@@ -9,6 +9,15 @@
 
 > 历史 27 版 (≤ 0.8.23) 在双文件分界确立前写成, 原文照搬未回填; 用户向 / 开发向严格分界自 **0.8.24** 起执行.
 
+## [0.18.0] - 2026-07-26
+
+### Added
+
+- 正式支持 Codex lifecycle hooks: 配置 `~/.codex/hooks.json` 后自动记录提示词 / 工具调用 / 停止等 session 事件, 配置样例见 `jj-agentic-aspect hook --help`。
+  - `cli/src/hook.rs`: HELP 增 Codex 官方 11 事件样例; `SessionEnd` 显式 `timeout=3`; Claude Code 样例 / 默认 source 不变。
+  - 通用 ingest / API / 存储 / web 已兼容 Codex stdin schema, 无协议与 migration 变更; Codex 0.145.0 真实 session 验证生命周期 + Bash 前后事件落盘。
+  - `README.md`: hook 使用入口从 Claude Code 扩展为 Claude Code / Codex。
+
 ## [0.17.1] - 2026-07-26
 
 ### Added
