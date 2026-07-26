@@ -59,7 +59,7 @@ export default function SessionDetail({ project, sessionId, onUnauthorized }: Pr
   }
 
   return (
-    <div className="space-y-3 max-w-4xl">
+    <div className="space-y-3">
       <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
         <span className="text-xs font-mono text-zinc-500 break-all">{sessionId}</span>
         {events.length > 0 && (
