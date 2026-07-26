@@ -1,33 +1,28 @@
-// jj-plan binary: project/spec/task workflow. Thin HTTP client over the worker.
-use jj_plan_cli::{
+// `plan` subcommand: project/spec/task workflow. Thin HTTP client over the worker.
+use crate::{
     api, die, die_usage, encode_uri_component, parse_set_flags, print, read_stdin, require_id,
-    require_no_args, run_installer, validate_body, validate_project, validate_title, MAX_BODY_LEN,
+    require_no_args, validate_body, validate_project, validate_title, ENTRY, MAX_BODY_LEN,
     MAX_PROJECT_NAME_LEN, MAX_TITLE_LEN, SPEC_STATUSES, TASK_STATUSES, VERSION,
 };
 use serde_json::{Map, Value};
-
-const ENTRY: &str = "jj-plan";
 
 fn usage(key: &str) -> String {
     let spec_st = SPEC_STATUSES.join("|");
     let task_st = TASK_STATUSES.join("|");
     match key {
-        "help" => "jj-plan --help".into(),
-        "version" => "jj-plan --version".into(),
-        "update" => "jj-plan update | upgrade".into(),
-        "uninstall" => "jj-plan uninstall".into(),
-        "project.ls" => "jj-plan project ls".into(),
-        "project.rm" => "jj-plan project rm <name>".into(),
-        "spec.new" => "jj-plan spec new <project> <title> [--after <prev_spec_id>]".into(),
-        "spec.ls" => "jj-plan spec ls <project>".into(),
-        "spec.show" => "jj-plan spec show <id>".into(),
-        "spec.set" => format!("jj-plan spec set <id> [--title T] [--body B] [--status {spec_st}]"),
-        "spec.rm" => "jj-plan spec rm <id>".into(),
-        "task.new" => "jj-plan task new <spec_id> <title> [--after <prev_task_id>]".into(),
-        "task.ls" => "jj-plan task ls <spec_id>".into(),
-        "task.set" => format!("jj-plan task set <id> [--title T] [--body B] [--status {task_st}]"),
-        "task.rm" => "jj-plan task rm <id>".into(),
-        _ => "jj-plan --help".into(),
+        "help" => "jj-agentic-aspect plan --help".into(),
+        "project.ls" => "jj-agentic-aspect plan project ls".into(),
+        "project.rm" => "jj-agentic-aspect plan project rm <name>".into(),
+        "spec.new" => "jj-agentic-aspect plan spec new <project> <title> [--after <prev_spec_id>]".into(),
+        "spec.ls" => "jj-agentic-aspect plan spec ls <project>".into(),
+        "spec.show" => "jj-agentic-aspect plan spec show <id>".into(),
+        "spec.set" => format!("jj-agentic-aspect plan spec set <id> [--title T] [--body B] [--status {spec_st}]"),
+        "spec.rm" => "jj-agentic-aspect plan spec rm <id>".into(),
+        "task.new" => "jj-agentic-aspect plan task new <spec_id> <title> [--after <prev_task_id>]".into(),
+        "task.ls" => "jj-agentic-aspect plan task ls <spec_id>".into(),
+        "task.set" => format!("jj-agentic-aspect plan task set <id> [--title T] [--body B] [--status {task_st}]"),
+        "task.rm" => "jj-agentic-aspect plan task rm <id>".into(),
+        _ => "jj-agentic-aspect plan --help".into(),
     }
 }
 
@@ -94,7 +89,7 @@ fn new_payload(title: String, body: String, prev: Option<String>) -> Value {
     Value::Object(m)
 }
 
-fn run(noun: &str, verb: Option<&str>, rest: &[String]) {
+fn dispatch(noun: &str, verb: Option<&str>, rest: &[String]) {
     match (noun, verb) {
         ("project", Some("ls")) => {
             require_no_args(ENTRY, rest, &usage("project.ls"));
@@ -181,12 +176,42 @@ fn run(noun: &str, verb: Option<&str>, rest: &[String]) {
         }
         _ => {
             let cmd = [Some(noun), verb].into_iter().flatten().collect::<Vec<_>>().join(" ");
-            fail(&format!("unknown command '{cmd}'; usage: {}", usage("help")));
+            fail(&format!("unknown command 'plan {cmd}'; usage: {}", usage("help")));
         }
     }
 }
 
-fn print_help() {
+/// Entry from main: argv is everything after `plan`.
+pub fn run(argv: &[String]) {
+    let head = argv.first().map(String::as_str);
+    if argv.is_empty() || head == Some("help") || head == Some("-h") || head == Some("--help") {
+        if argv.len() > 1 {
+            fail_usage("help", &format!("unexpected argument {}", argv[1]));
+        }
+        print_help();
+        return;
+    }
+
+    let noun = &argv[0];
+    let verb = argv.get(1).map(String::as_str);
+    let rest = argv.get(2..).unwrap_or(&[]);
+
+    if noun == "ask" {
+        fail(&format!(
+            "'ask' is a top-level subcommand; run 'jj-agentic-aspect ask {}' instead",
+            verb.unwrap_or("--help")
+        ));
+    }
+    if noun == "hook" || noun == "status" {
+        fail(&format!(
+            "'{noun}' belongs to the hook subcommand; run 'jj-agentic-aspect hook {}' instead",
+            verb.unwrap_or("--help")
+        ));
+    }
+    dispatch(noun, verb, rest);
+}
+
+pub fn print_help() {
     let help = HELP
         .replace("{VERSION}", VERSION)
         .replace("{SPEC_STATUSES}", &SPEC_STATUSES.join("|"))
@@ -197,73 +222,21 @@ fn print_help() {
     print!("{help}");
 }
 
-fn main() {
-    let argv: Vec<String> = std::env::args().skip(1).collect();
-
-    let head = argv.first().map(String::as_str);
-    if argv.is_empty() || head == Some("help") || head == Some("-h") || head == Some("--help") {
-        if argv.len() > 1 {
-            fail_usage("help", &format!("unexpected argument {}", argv[1]));
-        }
-        print_help();
-        return;
-    }
-    if head == Some("-v") || head == Some("--version") {
-        if argv.len() > 1 {
-            fail_usage("version", &format!("unexpected argument {}", argv[1]));
-        }
-        println!("{VERSION}");
-        return;
-    }
-    if head == Some("update") || head == Some("upgrade") {
-        if argv.len() > 1 {
-            fail_usage("update", &format!("unexpected argument {}", argv[1]));
-        }
-        run_installer(ENTRY, &[]);
-        return;
-    }
-    if head == Some("uninstall") {
-        if argv.len() > 1 {
-            fail_usage("uninstall", &format!("unexpected argument {}", argv[1]));
-        }
-        run_installer(ENTRY, &["--uninstall"]);
-        return;
-    }
-
-    let noun = &argv[0];
-    let verb = argv.get(1).map(String::as_str);
-    let rest = argv.get(2..).unwrap_or(&[]);
-
-    if noun == "ask" {
-        fail(&format!(
-            "'ask' is a jj-ask command; run 'jj-ask {}' instead",
-            verb.unwrap_or("--help")
-        ));
-    }
-    if noun == "status" {
-        fail(&format!(
-            "'status' is a jj-status command; run 'jj-status {}' instead",
-            verb.unwrap_or("--help")
-        ));
-    }
-    run(noun, verb, rest);
-}
-
-const HELP: &str = r#"jj-plan {VERSION}
+const HELP: &str = r#"jj-agentic-aspect plan {VERSION}
 
 # TLDR
-jj-plan: AI 用的 Spec/Task 跟踪 CLI. 三层模型 project -> spec -> task, id=ULID. <project>=cwd basename.
+plan: AI 用的 Spec/Task 跟踪. 三层模型 project -> spec -> task, id=ULID. <project>=cwd basename.
 循环: 写 spec 立计划 -> 拆 task -> 推 task status (todo/doing/done/blocked) -> 所有 task done 后 spec set done.
 
-  jj-plan spec new <project> <title>     # body 从 stdin 读; project 不存在自动建
-  jj-plan task new <spec_id> <title>     # body 从 stdin 读; 默认追加链尾, --after <id> 中间插
-  jj-plan task set <id> --status <s>     # 亦可改 --title/--body
-  jj-plan spec set <id> --status done    # 收尾, 需所有 task 已 done
+  jj-agentic-aspect plan spec new <project> <title>     # body 从 stdin 读; project 不存在自动建
+  jj-agentic-aspect plan task new <spec_id> <title>     # body 从 stdin 读; 默认追加链尾, --after <id> 中间插
+  jj-agentic-aspect plan task set <id> --status <s>     # 亦可改 --title/--body
+  jj-agentic-aspect plan spec set <id> --status done    # 收尾, 需所有 task 已 done
 
-输出: stdout 单行 JSON. 查询/删除/错误码/链语义见 jj-plan --help.
+输出: stdout 单行 JSON. 查询/删除/错误码/链语义见 jj-agentic-aspect plan --help.
 
 # PURPOSE
-为 AI 设计的 Spec/Task 跟踪 CLI.
+为 AI 设计的 Spec/Task 跟踪.
 
 # MODEL
 project (name, 主键) -- spec (id=ULID) -- task (id=ULID)
@@ -274,49 +247,46 @@ project (name, 主键) -- spec (id=ULID) -- task (id=ULID)
 
 # I/O
 - 输出: stdout 单行 JSON; DELETE 返回空 (HTTP 204).
-- 错误: stderr 单行 `jj-plan: <msg>` + 非零 exit; 客户端不重试.
+- 错误: stderr 单行 `jj-agentic-aspect: <msg>` + 非零 exit; 客户端不重试.
 - new 命令的 body 从 stdin 读 (无 stdin = 空 body); set 改 body 用 --body flag, 整体覆盖.
 - id 一律 ULID, 必须从响应 JSON 取, 不可构造或截断.
 - 限长 (chars): title 1..{MAX_TITLE_LEN}, body 0..{MAX_BODY_LEN}, project 1..{MAX_PROJECT_NAME_LEN}.
 
 # COMMANDS
 
-jj-plan --help | --version
-jj-plan update | upgrade | uninstall     仅在用户明确要求时执行 (同时影响 jj-ask; update/upgrade 等价)
-
-jj-plan project ls
+jj-agentic-aspect plan project ls
   -> [{name, created_at, updated_at, specs:[{...spec, tasks:[...task]}]}]
-jj-plan project rm <name>
+jj-agentic-aspect plan project rm <name>
   err: 404
 
-jj-plan spec new <project> <title> [--after <prev_spec_id>]
+jj-agentic-aspect plan spec new <project> <title> [--after <prev_spec_id>]
   -> {id, project_id, title, body, status:"active", prev_id, created_at, updated_at}
   err: 400 prev 跨项目/不存在 | 409 prev 已有后继
-jj-plan spec ls <project>
+jj-agentic-aspect plan spec ls <project>
   -> [{...spec, tasks:[...task]}]   (链序)
   err: 404
-jj-plan spec show <id>
+jj-agentic-aspect plan spec show <id>
   -> {...spec, tasks:[...task]}
   err: 404
-jj-plan spec set <id> [--title T] [--body B] [--status {SPEC_STATUSES}]
+jj-agentic-aspect plan spec set <id> [--title T] [--body B] [--status {SPEC_STATUSES}]
   至少传一个 flag.
   -> {...spec}
   err: 400 无 flag/status 非法 | 404
-jj-plan spec rm <id>
+jj-agentic-aspect plan spec rm <id>
   err: 404 | 409 并发
 
-jj-plan task new <spec_id> <title> [--after <prev_task_id>]
+jj-agentic-aspect plan task new <spec_id> <title> [--after <prev_task_id>]
   不传 --after 追加链尾.
   -> {id, spec_id, title, body, status:"todo", prev_id, created_at, updated_at}
   err: 400 prev 跨 spec/不存在 | 404 spec 不存在 (仅无 --after 时) | 409 并发
-jj-plan task ls <spec_id>
+jj-agentic-aspect plan task ls <spec_id>
   -> [...task]   (链序)
   err: 404
-jj-plan task set <id> [--title T] [--body B] [--status {TASK_STATUSES}]
+jj-agentic-aspect plan task set <id> [--title T] [--body B] [--status {TASK_STATUSES}]
   至少传一个 flag.
   -> {...task}
   err: 400 | 404
-jj-plan task rm <id>
+jj-agentic-aspect plan task rm <id>
   err: 404 | 409 并发
 
 # STATUS

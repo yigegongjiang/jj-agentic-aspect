@@ -21,8 +21,9 @@ export class ApiError extends Error {
 // No Authorization header: the browser authenticates via the Cloudflare Access
 // session cookie (CF_Authorization), sent automatically on same-origin requests
 // once the human clears Google SSO at the edge. The Worker validates it. The
-// CLI (jj-plan / jj-ask) reaches the same Worker via a Cloudflare Access service
-// token — every client authenticates through Access; there is no bearer path.
+// CLI (jj-agentic-aspect) reaches the same Worker via a Cloudflare Access
+// service token — every client authenticates through Access; there is no
+// bearer path.
 async function request<T>(
   method: 'GET' | 'POST' | 'PATCH' | 'DELETE',
   path: string,
@@ -117,7 +118,7 @@ export const api = {
   deleteAsk: (id: string) =>
     request<null>('DELETE', `/asks/${encodeURIComponent(id)}`),
 
-  // Claude Code hook session events (ingested by jj-status).
+  // Agent hook session events (ingested by `jj-agentic-aspect hook`).
   listSessions: (project: string, limit?: number) => {
     const q = limit !== undefined ? `?limit=${limit}` : '';
     return request<SessionSummary[]>(

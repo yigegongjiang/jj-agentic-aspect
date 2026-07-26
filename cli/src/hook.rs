@@ -1,25 +1,29 @@
-// jj-status binary: Claude Code hook session-event logging.
+// `hook` subcommand: agent hook session-event logging.
 //
-// `jj-status hook` is wired into Claude Code's hooks (settings.json) and runs
-// on every hook event. It reads the event JSON from stdin, shrinks oversized
-// fields, and uploads to the worker. It is a pure observer: it always exits 0
-// and never writes to stdout, so a broken config / network / payload can never
-// block or pollute the hosting session.
+// `jj-agentic-aspect hook --source <s>` is wired into the host agent's hooks
+// (e.g. Claude Code settings.json) and runs on every hook event. It reads the
+// event JSON from stdin, shrinks oversized fields, and uploads to the worker.
+// It is a pure observer: it always exits 0 and never writes to stdout, so a
+// broken config / network / payload can never block or pollute the hosting
+// session. `--source` names the emitting agent (claude-code today; codex etc.
+// later) and defaults to claude-code.
 use std::time::Duration;
 
-use jj_plan_cli::{
-    api, die, die_usage, encode_uri_component, print, read_stdin, run_installer, try_api,
-    validate_project, MAX_BODY_LEN, VERSION,
+use crate::{
+    api, die, die_usage, encode_uri_component, print, read_stdin, try_api, validate_project,
+    ENTRY, MAX_BODY_LEN, VERSION,
 };
 use serde_json::{json, Map, Value};
-
-const ENTRY: &str = "jj-status";
 
 // Mirror the worker's bounds (worker/src/index.ts).
 const MAX_SESSION_ID_LEN: usize = 128;
 const MAX_EVENT_LEN: usize = 64;
+const MAX_SOURCE_LEN: usize = 64;
 const SESSION_LIST_LIMIT_DEFAULT: u32 = 50;
 const SESSION_LIST_LIMIT_MAX: u32 = 200;
+
+/// Default event source. The only emitter today; more (codex, ...) later.
+const DEFAULT_SOURCE: &str = "claude-code";
 
 // Upload budget (UTF-16 units), safely under the worker's MAX_BODY_LEN after
 // JSON escaping overhead.
@@ -33,17 +37,14 @@ const HOOK_TIMEOUT: Duration = Duration::from_secs(10);
 
 fn usage(key: &str) -> String {
     match key {
-        "help" => "jj-status --help".into(),
-        "version" => "jj-status --version".into(),
-        "update" => "jj-status update | upgrade".into(),
-        "uninstall" => "jj-status uninstall".into(),
-        "status.hook" => "jj-status hook   (hook JSON on stdin)".into(),
-        "status.sessions" => format!(
-            "jj-status sessions <project> [--limit N]   (default {SESSION_LIST_LIMIT_DEFAULT}, max {SESSION_LIST_LIMIT_MAX})"
+        "help" => "jj-agentic-aspect hook --help".into(),
+        "hook.ingest" => "jj-agentic-aspect hook [--source <s>]   (hook JSON on stdin)".into(),
+        "hook.sessions" => format!(
+            "jj-agentic-aspect hook sessions <project> [--limit N]   (default {SESSION_LIST_LIMIT_DEFAULT}, max {SESSION_LIST_LIMIT_MAX})"
         ),
-        "status.ls" => "jj-status ls <project> <session_id>".into(),
-        "status.rm" => "jj-status rm <project> <session_id>".into(),
-        _ => "jj-status --help".into(),
+        "hook.ls" => "jj-agentic-aspect hook ls <project> <session_id>".into(),
+        "hook.rm" => "jj-agentic-aspect hook rm <project> <session_id>".into(),
+        _ => "jj-agentic-aspect hook --help".into(),
     }
 }
 
@@ -156,9 +157,35 @@ fn project_name(payload: &Value) -> Option<String> {
     None
 }
 
-/// The hook entry point. Every failure path is a silent `return` — exit 0, no
-/// stdout — because this runs inside someone's live Claude Code session.
-fn run_hook() {
+/// Parse the ingest arg list. Only `--source <s>` / `--source=<s>` is
+/// meaningful; anything else is silently ignored — a misconfigured hook line
+/// must never break the hosting session. Empty / missing value falls back to
+/// the default.
+fn parse_source(args: &[String]) -> String {
+    let mut source: Option<String> = None;
+    let mut i = 0;
+    while i < args.len() {
+        let arg = &args[i];
+        if arg == "--source" {
+            if let Some(v) = args.get(i + 1) {
+                if !v.is_empty() && !v.starts_with("--") {
+                    source = Some(v.clone());
+                    i += 1;
+                }
+            }
+        } else if let Some(v) = arg.strip_prefix("--source=") {
+            if !v.is_empty() {
+                source = Some(v.to_string());
+            }
+        }
+        i += 1;
+    }
+    clip(&source.unwrap_or_else(|| DEFAULT_SOURCE.to_string()), MAX_SOURCE_LEN)
+}
+
+/// The ingest entry point. Every failure path is a silent `return` — exit 0,
+/// no stdout — because this runs inside someone's live agent session.
+fn run_ingest(source: &str) {
     let raw = read_stdin();
     if raw.trim().is_empty() {
         return;
@@ -186,7 +213,7 @@ fn run_hook() {
     debug_assert!(len16(&body) <= MAX_BODY_LEN);
 
     let path = format!("/projects/{}/statuses", encode_uri_component(&project));
-    let upload = json!({ "session_id": session_id, "event": event, "body": body });
+    let upload = json!({ "session_id": session_id, "event": event, "source": source, "body": body });
     // Ignore the outcome entirely: losing one event beats disturbing a session.
     let _ = try_api("POST", &path, Some(upload), Some(HOOK_TIMEOUT));
 }
@@ -218,49 +245,56 @@ fn parse_sessions_args(args: &[String]) -> (String, Option<u32>) {
         let arg = &args[i];
         if arg == "--limit" {
             if limit.is_some() {
-                fail_usage("status.sessions", "duplicate --limit");
+                fail_usage("hook.sessions", "duplicate --limit");
             }
             i += 1;
             let v = match args.get(i) {
                 Some(v) if !v.starts_with("--") => v,
-                _ => fail_usage("status.sessions", "missing <N> after --limit"),
+                _ => fail_usage("hook.sessions", "missing <N> after --limit"),
             };
             match v.parse::<u32>() {
                 Ok(n) if (1..=SESSION_LIST_LIMIT_MAX).contains(&n) => limit = Some(n),
                 _ => fail_usage(
-                    "status.sessions",
+                    "hook.sessions",
                     &format!("--limit must be integer in 1..{SESSION_LIST_LIMIT_MAX}"),
                 ),
             }
         } else if arg.starts_with("--") {
-            fail_usage("status.sessions", &format!("unknown option {arg}"));
+            fail_usage("hook.sessions", &format!("unknown option {arg}"));
         } else if project.is_none() {
             project = Some(arg.clone());
         } else {
-            fail_usage("status.sessions", &format!("unexpected argument {arg}"));
+            fail_usage("hook.sessions", &format!("unexpected argument {arg}"));
         }
         i += 1;
     }
-    let project = project.unwrap_or_else(|| fail_usage("status.sessions", "missing <project>"));
+    let project = project.unwrap_or_else(|| fail_usage("hook.sessions", "missing <project>"));
     validate_project(ENTRY, &project);
     (project, limit)
 }
 
-fn run(verb: &str, rest: &[String]) {
-    match verb {
-        "hook" => {
-            // Extra args are ignored, not fatal: a misconfigured hook line must
-            // still not break the session.
-            run_hook();
+/// Entry from main: argv is everything after `hook`.
+/// Bare / flags-only invocation = the ingest path used inside agent hooks
+/// (silent, always exit 0); the query verbs stay strict and fail loudly.
+pub fn run(argv: &[String]) {
+    let head = argv.first().map(String::as_str);
+    if head == Some("help") || head == Some("-h") || head == Some("--help") {
+        if argv.len() > 1 {
+            fail_usage("help", &format!("unexpected argument {}", argv[1]));
         }
-        "sessions" => {
-            let (project, limit) = parse_sessions_args(rest);
+        print_help();
+        return;
+    }
+    match head {
+        None => run_ingest(DEFAULT_SOURCE),
+        Some("sessions") => {
+            let (project, limit) = parse_sessions_args(&argv[1..]);
             let q = limit.map(|n| format!("?limit={n}")).unwrap_or_default();
             let path = format!("/projects/{}/sessions{q}", encode_uri_component(&project));
             print(api(ENTRY, "GET", &path, None).as_ref());
         }
-        "ls" => {
-            let (project, sid) = parse_project_session("status.ls", rest);
+        Some("ls") => {
+            let (project, sid) = parse_project_session("hook.ls", &argv[1..]);
             let path = format!(
                 "/projects/{}/sessions/{}/statuses",
                 encode_uri_component(&project),
@@ -268,8 +302,8 @@ fn run(verb: &str, rest: &[String]) {
             );
             print(api(ENTRY, "GET", &path, None).as_ref());
         }
-        "rm" => {
-            let (project, sid) = parse_project_session("status.rm", rest);
+        Some("rm") => {
+            let (project, sid) = parse_project_session("hook.rm", &argv[1..]);
             let path = format!(
                 "/projects/{}/sessions/{}",
                 encode_uri_component(&project),
@@ -277,11 +311,12 @@ fn run(verb: &str, rest: &[String]) {
             );
             api(ENTRY, "DELETE", &path, None);
         }
-        _ => fail(&format!("unknown command '{verb}'; usage: {}", usage("help"))),
+        Some(s) if s.starts_with('-') => run_ingest(&parse_source(argv)),
+        Some(other) => fail(&format!("unknown command 'hook {other}'; usage: {}", usage("help"))),
     }
 }
 
-fn print_help() {
+pub fn print_help() {
     let help = HELP
         .replace("{VERSION}", VERSION)
         .replace("{SESSION_LIST_LIMIT_DEFAULT}", &SESSION_LIST_LIMIT_DEFAULT.to_string())
@@ -289,98 +324,58 @@ fn print_help() {
     print!("{help}");
 }
 
-fn main() {
-    let argv: Vec<String> = std::env::args().skip(1).collect();
-
-    let head = argv.first().map(String::as_str);
-    if argv.is_empty() || head == Some("help") || head == Some("-h") || head == Some("--help") {
-        if argv.len() > 1 {
-            fail_usage("help", &format!("unexpected argument {}", argv[1]));
-        }
-        print_help();
-        return;
-    }
-    if head == Some("-v") || head == Some("--version") {
-        if argv.len() > 1 {
-            fail_usage("version", &format!("unexpected argument {}", argv[1]));
-        }
-        println!("{VERSION}");
-        return;
-    }
-    if head == Some("update") || head == Some("upgrade") {
-        if argv.len() > 1 {
-            fail_usage("update", &format!("unexpected argument {}", argv[1]));
-        }
-        run_installer(ENTRY, &[]);
-        return;
-    }
-    if head == Some("uninstall") {
-        if argv.len() > 1 {
-            fail_usage("uninstall", &format!("unexpected argument {}", argv[1]));
-        }
-        run_installer(ENTRY, &["--uninstall"]);
-        return;
-    }
-
-    let verb = &argv[0];
-    let rest = argv.get(1..).unwrap_or(&[]);
-    run(verb, rest);
-}
-
-const HELP: &str = r#"jj-status {VERSION}
+const HELP: &str = r#"jj-agentic-aspect hook {VERSION}
 
 # TLDR
-jj-status: 落盘 Claude Code hook 的 session 运行事件. 层级 project -> session -> event.
-`jj-status hook` 挂进 Claude Code hooks 后自动上报, 事后经 dashboard 按 session 时间线回看.
+hook: 落盘 agent hook 的 session 运行事件. 层级 project -> session -> event; 每条事件带 source (哪个 agent 上报).
+`jj-agentic-aspect hook --source claude-code` 挂进 agent hooks 后自动上报, 事后经 dashboard 按 session 时间线回看.
 
-  jj-status hook                          # hook 专用: stdin 读事件 JSON, 静默上报, 永远 exit 0
-  jj-status sessions <project>            # 该项目的 session 摘要列表
+  jj-agentic-aspect hook [--source <s>]           # hook 专用: stdin 读事件 JSON, 静默上报, 永远 exit 0; source 默认 claude-code
+  jj-agentic-aspect hook sessions <project>       # 该项目的 session 摘要列表
 
-输出: stdout 单行 JSON. 查询/删除见 jj-status --help.
+输出: stdout 单行 JSON. 查询/删除见 jj-agentic-aspect hook --help.
 
 # PURPOSE
-记录 Claude Code 每个 session 的运行过程 (提示词/工具调用/停止等 hook 事件), 供 web 端回看.
+记录 agent 每个 session 的运行过程 (提示词/工具调用/停止等 hook 事件), 供 web 端回看.
 
 # MODEL
-project (name) -- session (session_id, 来自 Claude Code) -- event (id=ULID, 追加只读)
+project (name) -- session (session_id, 来自宿主 agent) -- event (id=ULID, 追加只读)
 - project 自动 upsert; project = hook JSON 的 cwd basename (回退 $CLAUDE_PROJECT_DIR / 进程 cwd).
-- event 不可修改; 删除只按整个 session.
+- event 带 source (上报方: claude-code / codex / ..., 默认 claude-code), 不可修改; 删除只按整个 session.
 - project rm 级联删全部 event.
 
 # HOOK 行为
-- stdin 读 Claude Code hook JSON, 提取 session_id + hook_event_name, 原始 JSON 作 body 上报.
+- stdin 读 hook JSON, 提取 session_id + hook_event_name, 原始 JSON 作 body 上报.
 - 超长字段递归截断 (带 truncated 标记), 超长数组截前 100 项, 保证 body 不超限.
 - 永远 exit 0, 不写 stdout, 上报限时 10s: 任何失败静默丢弃, 绝不干扰宿主 session.
+- 未知 flag 静默忽略 (hook 行配置错误也不得影响宿主).
 
-# 配置 (~/.claude/settings.json; 事件集可按需增删, 未知事件同样原样落盘)
+# 配置 (Claude Code: ~/.claude/settings.json; 事件集可按需增删, 未知事件同样原样落盘)
 {
   "hooks": {
-    "SessionStart":       [{ "hooks": [{ "type": "command", "command": "jj-status hook" }] }],
-    "UserPromptSubmit":   [{ "hooks": [{ "type": "command", "command": "jj-status hook" }] }],
-    "PostToolUse":        [{ "hooks": [{ "type": "command", "command": "jj-status hook" }] }],
-    "PostToolUseFailure": [{ "hooks": [{ "type": "command", "command": "jj-status hook" }] }],
-    "PermissionDenied":   [{ "hooks": [{ "type": "command", "command": "jj-status hook" }] }],
-    "Notification":       [{ "hooks": [{ "type": "command", "command": "jj-status hook" }] }],
-    "Stop":               [{ "hooks": [{ "type": "command", "command": "jj-status hook" }] }],
-    "SubagentStop":       [{ "hooks": [{ "type": "command", "command": "jj-status hook" }] }],
-    "PreCompact":         [{ "hooks": [{ "type": "command", "command": "jj-status hook" }] }],
-    "SessionEnd":         [{ "hooks": [{ "type": "command", "command": "jj-status hook" }] }]
+    "SessionStart":       [{ "hooks": [{ "type": "command", "command": "jj-agentic-aspect hook --source claude-code" }] }],
+    "UserPromptSubmit":   [{ "hooks": [{ "type": "command", "command": "jj-agentic-aspect hook --source claude-code" }] }],
+    "PostToolUse":        [{ "hooks": [{ "type": "command", "command": "jj-agentic-aspect hook --source claude-code" }] }],
+    "PostToolUseFailure": [{ "hooks": [{ "type": "command", "command": "jj-agentic-aspect hook --source claude-code" }] }],
+    "PermissionDenied":   [{ "hooks": [{ "type": "command", "command": "jj-agentic-aspect hook --source claude-code" }] }],
+    "Notification":       [{ "hooks": [{ "type": "command", "command": "jj-agentic-aspect hook --source claude-code" }] }],
+    "Stop":               [{ "hooks": [{ "type": "command", "command": "jj-agentic-aspect hook --source claude-code" }] }],
+    "SubagentStop":       [{ "hooks": [{ "type": "command", "command": "jj-agentic-aspect hook --source claude-code" }] }],
+    "PreCompact":         [{ "hooks": [{ "type": "command", "command": "jj-agentic-aspect hook --source claude-code" }] }],
+    "SessionEnd":         [{ "hooks": [{ "type": "command", "command": "jj-agentic-aspect hook --source claude-code" }] }]
   }
 }
 
 # COMMANDS
 
-jj-status --help | --version
-jj-status update | upgrade | uninstall    仅在用户明确要求时执行 (同时影响 jj-plan/jj-ask)
-
-jj-status hook
-  stdin=hook JSON; 无输出, 永远 exit 0.
-jj-status sessions <project> [--limit N]   (default {SESSION_LIST_LIMIT_DEFAULT}, max {SESSION_LIST_LIMIT_MAX}, by last_at DESC)
-  -> [{session_id, events_count, first_at, last_at, first_prompt}]
+jj-agentic-aspect hook [--source <s>]
+  stdin=hook JSON; 无输出, 永远 exit 0. source 默认 claude-code, 超 64 字符截断.
+jj-agentic-aspect hook sessions <project> [--limit N]   (default {SESSION_LIST_LIMIT_DEFAULT}, max {SESSION_LIST_LIMIT_MAX}, by last_at DESC)
+  -> [{session_id, source, events_count, first_at, last_at, first_prompt}]
   err: 404
-jj-status ls <project> <session_id>
-  -> [{id, project_id, session_id, event, body, created_at}]   (时间序)
+jj-agentic-aspect hook ls <project> <session_id>
+  -> [{id, project_id, session_id, event, source, body, created_at}]   (时间序)
   err: 404
-jj-status rm <project> <session_id>
+jj-agentic-aspect hook rm <project> <session_id>
   err: 404
 "#;

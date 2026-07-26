@@ -67,12 +67,14 @@ interface StatusRow {
   project_id: string;
   session_id: string;
   event: string;
+  source: string;
   body: string;
   created_at: number;
 }
 
 interface SessionSummary {
   session_id: string;
+  source: string;
   events_count: number;
   first_at: number;
   last_at: number;
@@ -84,6 +86,10 @@ const ASK_LIMIT_MAX = 100;
 
 const MAX_SESSION_ID_LEN = 128;
 const MAX_EVENT_LEN = 64;
+// Which agent emitted the event (claude-code / codex / ...). Optional on
+// ingest — older CLIs don't send it — so it defaults instead of rejecting.
+const MAX_SOURCE_LEN = 64;
+const DEFAULT_SOURCE = 'claude-code';
 const SESSION_LIST_LIMIT_DEFAULT = 50;
 const SESSION_LIST_LIMIT_MAX = 200;
 // Hard cap on events returned for one session. Client-side truncation keeps
@@ -1051,16 +1057,19 @@ app.delete('/asks/:id', async (c) => {
   return c.body(null, 204);
 });
 
-// ---------- statuses (Claude Code hook session events) ----------
+// ---------- statuses (agent hook session events) ----------
 // Append-only event log, grouped by session_id within a project. Ingested by
-// `jj-status hook`; browsed as sessions (summary) → one session's timeline.
-// No PATCH: events are immutable records of what happened.
+// `jj-agentic-aspect hook`; browsed as sessions (summary) → one session's
+// timeline. No PATCH: events are immutable records of what happened.
 
 function parseStatusPayload(raw: {
   session_id?: unknown;
   event?: unknown;
+  source?: unknown;
   body?: unknown;
-}): { ok: true; value: { session_id: string; event: string; body: string } } | { ok: false; error: string } {
+}):
+  | { ok: true; value: { session_id: string; event: string; source: string; body: string } }
+  | { ok: false; error: string } {
   if (
     typeof raw.session_id !== 'string' ||
     raw.session_id.length === 0 ||
@@ -1071,10 +1080,17 @@ function parseStatusPayload(raw: {
   if (typeof raw.event !== 'string' || raw.event.length === 0 || raw.event.length > MAX_EVENT_LEN) {
     return { ok: false, error: `event must be string of 1..${MAX_EVENT_LEN} chars` };
   }
+  let source = DEFAULT_SOURCE;
+  if (raw.source !== undefined) {
+    if (typeof raw.source !== 'string' || raw.source.length === 0 || raw.source.length > MAX_SOURCE_LEN) {
+      return { ok: false, error: `source must be string of 1..${MAX_SOURCE_LEN} chars` };
+    }
+    source = raw.source;
+  }
   if (typeof raw.body !== 'string' || raw.body.length === 0 || raw.body.length > MAX_BODY_LEN) {
     return { ok: false, error: `body must be string of 1..${MAX_BODY_LEN} chars` };
   }
-  return { ok: true, value: { session_id: raw.session_id, event: raw.event, body: raw.body } };
+  return { ok: true, value: { session_id: raw.session_id, event: raw.event, source, body: raw.body } };
 }
 
 app.post('/projects/:name/statuses', async (c) => {
@@ -1083,7 +1099,12 @@ app.post('/projects/:name/statuses', async (c) => {
     return c.json({ error: `project name length must be 1..${MAX_PROJECT_NAME_LEN}` }, 400);
   }
 
-  const parsedBody = await parseJsonBody<{ session_id?: unknown; event?: unknown; body?: unknown }>(c);
+  const parsedBody = await parseJsonBody<{
+    session_id?: unknown;
+    event?: unknown;
+    source?: unknown;
+    body?: unknown;
+  }>(c);
   if (!parsedBody.ok) return parsedBody.response;
   const parsed = parseStatusPayload(parsedBody.value);
   if (!parsed.ok) return c.json({ error: parsed.error }, 400);
@@ -1096,9 +1117,9 @@ app.post('/projects/:name/statuses', async (c) => {
       .bind(name, t, t),
     c.env.DB
       .prepare(
-        'INSERT INTO statuses (id, project_id, session_id, event, body, created_at) VALUES (?, ?, ?, ?, ?, ?)',
+        'INSERT INTO statuses (id, project_id, session_id, event, source, body, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
       )
-      .bind(id, name, parsed.value.session_id, parsed.value.event, parsed.value.body, t),
+      .bind(id, name, parsed.value.session_id, parsed.value.event, parsed.value.source, parsed.value.body, t),
     bumpProject(c.env.DB, name, t),
   ]);
   return c.json(
@@ -1107,6 +1128,7 @@ app.post('/projects/:name/statuses', async (c) => {
       project_id: name,
       session_id: parsed.value.session_id,
       event: parsed.value.event,
+      source: parsed.value.source,
       body: parsed.value.body,
       created_at: t,
     },
@@ -1138,6 +1160,7 @@ app.get('/projects/:name/sessions', async (c) => {
   const { results } = await c.env.DB
     .prepare(
       `SELECT s.session_id,
+              MIN(s.source) AS source,
               COUNT(*) AS events_count,
               MIN(s.created_at) AS first_at,
               MAX(s.created_at) AS last_at,
@@ -1167,7 +1190,7 @@ app.get('/projects/:name/sessions/:sid/statuses', async (c) => {
   const sid = c.req.param('sid');
   const { results } = await c.env.DB
     .prepare(
-      'SELECT id, project_id, session_id, event, body, created_at FROM statuses WHERE project_id = ? AND session_id = ? ORDER BY id LIMIT ?',
+      'SELECT id, project_id, session_id, event, source, body, created_at FROM statuses WHERE project_id = ? AND session_id = ? ORDER BY id LIMIT ?',
     )
     .bind(name, sid, SESSION_EVENTS_LIMIT)
     .all<StatusRow>();

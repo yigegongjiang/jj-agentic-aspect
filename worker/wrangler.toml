@@ -1,4 +1,4 @@
-name = "jj-plan"
+name = "jj-agentic-aspect"
 main = "src/index.ts"
 compatibility_date = "2026-05-01"
 
@@ -28,10 +28,17 @@ directory = "../web/out"
 CF_ACCESS_TEAM_DOMAIN = "https://yigegongjiang.cloudflareaccess.com"
 CF_ACCESS_AUD = "e255d29d523b8a7785d15a9556b1e50b3497c691b45887ac0aad2bd27e4e4c6b"
 
+# Custom domain (jj-agentic-aspect.yigegongjiang.com) is managed out-of-band,
+# not here: the Cloudflare Access application is bound to that hostname.
+# Renaming/moving the hostname requires updating the Access app (Zero Trust
+# dashboard) in the same change — done together in the 0.17.0 rename.
+
 # database_id is filled in during one-time bootstrap:
 #   wrangler d1 create jjplan
 # Copy the returned id below, commit, then run:
 #   wrangler d1 execute jjplan --file migrations/0001_init.sql --remote
+# database_name "jjplan" is a label only — D1 has no rename; the pre-rename
+# name stays to keep the data.
 [[d1_databases]]
 binding = "DB"
 database_name = "jjplan"

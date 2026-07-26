@@ -4,7 +4,7 @@ import { useEffect, useState, type ReactNode } from 'react';
 
 // Exported so other entry points (e.g. an ask-search result click) can preselect
 // the tab this component reads on mount.
-export const PROJECT_TAB_STORAGE_KEY = 'jj-plan_project_tab';
+export const PROJECT_TAB_STORAGE_KEY = 'jj-agentic-aspect_project_tab';
 const STORAGE_KEY = PROJECT_TAB_STORAGE_KEY;
 type Tab = 'plans' | 'asks' | 'sessions';
 const DEFAULT_TAB: Tab = 'plans';

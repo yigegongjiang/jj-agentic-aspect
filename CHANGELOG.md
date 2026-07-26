@@ -13,6 +13,15 @@
 
 > 历史 27 版 (≤ 0.8.23) 在双文件分界确立前写成, 含文件/函数级细节, 原文照搬未回填; 用户向精简严格自 **0.8.24** 起执行.
 
+## [0.17.0] - 2026-07-26
+
+### Changed
+
+- 整体改名 `jj-plan` -> `jj-agentic-aspect`: 三个命令 (`jj-plan`/`jj-ask`/`jj-status`) 合并为单一 `jj-agentic-aspect`, 子命令 `plan` / `ask` / `hook`; 安装脚本自动清理旧二进制, 调用方需一次性迁移命令 (含 Claude Code hooks 配置指向 `jj-agentic-aspect hook --source claude-code`)。
+- hook 事件新增 source 标注上报 agent (默认 claude-code, 预留 codex 等); dashboard session 列表与时间线展示 source。
+- GitHub 仓库改名 `yigegongjiang/jj-agentic-aspect` (旧地址自动重定向, 旧版二进制 `update` 仍可完成迁移); 配置目录迁至 `~/.config/jj-agentic-aspect` (旧路径只读 fallback, 无需手动搬移)。
+- 服务端 worker 与访问域名改名: 唯一入口迁至 `jj-agentic-aspect.yigegongjiang.com` (旧域名 `jj-plan.yigegongjiang.com` 已下线), 数据不变; CLI 配置 `endpoint` 需指向新域名。
+
 ## [0.16.0] - 2026-07-26
 
 ### Added

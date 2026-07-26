@@ -32,9 +32,9 @@
 
 ## 硬性规则
 
-- **稳定优先**: `jj-plan` 是 rock-stable plan system; 稳定性优先于功能扩展 / UI 质量 / 架构抽象 / 重构
+- **稳定优先**: `jj-agentic-aspect` 是 rock-stable 追踪系统; 稳定性优先于功能扩展 / UI 质量 / 架构抽象 / 重构
 - **契约 vs 内部**: CLI/API 行为 = 稳定契约; 数据结构 = 内部实现. 变更前确认当前行为, 变更后保持兼容
-- **自举**: 维护本仓库 MUST 通过 `jj-plan` 自身 (创建/拆解/追踪 Spec/Task), 不在 chat 或散落 md 中; 摩擦 = 缺陷, 优先修复
+- **自举**: 维护本仓库 MUST 通过 `jj-agentic-aspect plan` 自身 (创建/拆解/追踪 Spec/Task), 不在 chat 或散落 md 中; 摩擦 = 缺陷, 优先修复
 - **边界**: 不引入 Spec/Task/Ask 之外的产品模型 (除非用户明确要求); 不加额外运行时 / 服务形态 / 存储 / 后台守护; 默认稳定、窄、可维护
 - **平台**: macOS only (x64 + arm64); `install.sh` 和 `update` 主动拒绝其他 OS/arch
-- **版本一致性**: 根目录 `VERSION` 文件 = 唯一信源; `cli/build.ts` 注入二进制为 `JJ_VERSION`; Actions 首步校验 `VERSION == tag (去 v)`, 不一致则失败
+- **版本一致性**: 根目录 `VERSION` 文件 = 唯一信源; `cli/build.rs` 注入二进制为 `JJ_VERSION`; Actions 首步校验 `VERSION == tag (去 v)`, 不一致则失败

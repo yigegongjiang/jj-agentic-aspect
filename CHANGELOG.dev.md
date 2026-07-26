@@ -9,6 +9,26 @@
 
 > 历史 27 版 (≤ 0.8.23) 在双文件分界确立前写成, 原文照搬未回填; 用户向 / 开发向严格分界自 **0.8.24** 起执行.
 
+## [0.17.0] - 2026-07-26
+
+### Changed
+
+- 整体改名 `jj-plan` -> `jj-agentic-aspect`: 三个命令 (`jj-plan`/`jj-ask`/`jj-status`) 合并为单一 `jj-agentic-aspect`, 子命令 `plan` / `ask` / `hook`; 安装脚本自动清理旧二进制, 调用方需一次性迁移命令 (含 Claude Code hooks 配置指向 `jj-agentic-aspect hook --source claude-code`)。
+  - `cli/`: `src/bin/{jj-plan,jj-ask,jj-status}.rs` -> lib 模块 `src/{plan,ask,hook}.rs` (`pub fn run(argv)`) + 新 `src/main.rs` 顶层分发 (--help/--version/update/uninstall 仅顶层); Cargo package 改名 `jj-agentic-aspect`; 旧顶层名词 (`spec`/`task`/`status` 等) 报错并指路新子命令。
+  - `cli/src/lib.rs`: 新增 `ENTRY`; config 规范路径 `~/.config/jj-agentic-aspect` (legacy fallback 依序 `jj-plan`/`jjplan`/`~/.jjplan`); `INSTALL_URL` 指向新 repo。
+  - `scripts/install.sh` + `scripts/install-local.sh`: `BINARIES=(jj-agentic-aspect)`; install.sh 增 `LEGACY_BINARIES` 清理 (install + uninstall 两路径)。
+  - `.github/workflows/release.yml`: 编译/产物/checksums 收敛为单二进制 `jj-agentic-aspect-macos-{arm64,x64}`。
+- hook 事件新增 source 标注上报 agent (默认 claude-code, 预留 codex 等); dashboard session 列表与时间线展示 source。
+  - `worker/migrations/0006_add_status_source.sql`: `statuses.source TEXT NOT NULL DEFAULT 'claude-code'` (旧行回填正确)。
+  - `worker/src/index.ts`: `parseStatusPayload` 可选 source (1..64, 缺省 claude-code, 兼容旧 CLI); POST/GET statuses 带 source; sessions 摘要 `MIN(s.source) AS source`。
+  - `cli/src/hook.rs`: ingest 路径解析 `--source <s>`/`--source=<s>` (未知 flag 静默忽略, 保护宿主 session); 上报 payload 增 source。
+  - `web/lib/types.ts` (`Status.source`/`SessionSummary.source`) + `SessionsView.tsx` 卡片、`SessionDetail.tsx` 头部展示 source。
+- GitHub 仓库改名 `yigegongjiang/jj-agentic-aspect` (旧地址自动重定向, 旧版二进制 `update` 仍可完成迁移); 配置目录迁至 `~/.config/jj-agentic-aspect` (旧路径只读 fallback, 无需手动搬移)。
+  - `cli/Cargo.toml` repository / `README.md` curl URL / install.sh `REPO` 同步。
+- 服务端 worker 与访问域名改名: 唯一入口迁至 `jj-agentic-aspect.yigegongjiang.com` (旧域名 `jj-plan.yigegongjiang.com` 已下线), 数据不变; CLI 配置 `endpoint` 需指向新域名。
+  - `worker/wrangler.toml` `name = "jj-agentic-aspect"`; 部署新 worker + API `PUT workers/domains` 挂新域名 + 删旧 worker/旧域名; Access 应用 (id 7f356f78) 经 Zero Trust 面板改名 jj-agentic-aspect 并绑定新 hostname (app id 不变 -> AUD 不变, wrangler.toml `[vars]` 无需改); D1 `database_name=jjplan` 为 label 不变 (D1 无 rename), Actions `d1 migrations apply jjplan` 不变。
+  - `web/`: package 名、layout description、AskSearch 文案、ProjectTabs localStorage key 改 jj-agentic-aspect。
+
 ## [0.16.0] - 2026-07-26
 
 ### Added

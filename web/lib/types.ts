@@ -55,12 +55,14 @@ export interface Ask {
   updated_at: number;
 }
 
-// Claude Code hook session events (GET /projects/:name/sessions[...]).
+// Agent hook session events (GET /projects/:name/sessions[...]).
+// source = which agent emitted the events (claude-code / codex / ...).
 export const SESSION_LIST_LIMIT_DEFAULT = 50;
 export const SESSION_LIST_LIMIT_MAX = 200;
 
 export interface SessionSummary {
   session_id: string;
+  source: string;
   events_count: number;
   first_at: number;
   last_at: number;
@@ -72,6 +74,7 @@ export interface Status {
   project_id: string;
   session_id: string;
   event: string;
+  source: string;
   body: string;
   created_at: number;
 }

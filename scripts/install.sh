@@ -1,19 +1,22 @@
 #!/usr/bin/env bash
-# install.sh — install / update / uninstall jj-plan + jj-ask + jj-status from GitHub Releases.
-# One action covers all binaries; per-binary mode is not supported.
+# install.sh — install / update / uninstall the jj-agentic-aspect binary from
+# GitHub Releases. Also removes the legacy pre-merge binaries
+# (jj-plan / jj-ask / jj-status) that this binary replaced.
 #
 # Usage:
-#   curl -fsSL https://raw.githubusercontent.com/yigegongjiang/jj-plan/main/scripts/install.sh | bash
-#   curl -fsSL https://raw.githubusercontent.com/yigegongjiang/jj-plan/main/scripts/install.sh | VERSION=v0.8.23 bash
+#   curl -fsSL https://raw.githubusercontent.com/yigegongjiang/jj-agentic-aspect/main/scripts/install.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/yigegongjiang/jj-agentic-aspect/main/scripts/install.sh | VERSION=v0.17.0 bash
 #   INSTALL_DIR=/usr/local/bin ./scripts/install.sh
 #   ./scripts/install.sh uninstall
 
 set -euo pipefail
 
-REPO="${REPO:-yigegongjiang/jj-plan}"
+REPO="${REPO:-yigegongjiang/jj-agentic-aspect}"
 VERSION="${VERSION:-latest}"
 INSTALL_DIR="${INSTALL_DIR:-$HOME/.local/bin}"
-BINARIES=(jj-plan jj-ask jj-status)
+BINARIES=(jj-agentic-aspect)
+# Pre-0.17 binaries, replaced by the single jj-agentic-aspect binary.
+LEGACY_BINARIES=(jj-plan jj-ask jj-status)
 
 err()  { printf 'install.sh: %s\n' "$*" >&2; exit 1; }
 info() { printf '%s\n' "$*"; }
@@ -21,10 +24,10 @@ info() { printf '%s\n' "$*"; }
 usage() {
   cat <<'EOF'
 usage: install.sh [install|update|uninstall]
-  install/update: download jj-plan + jj-ask + jj-status
-  uninstall:      remove jj-plan + jj-ask + jj-status (config kept)
+  install/update: download jj-agentic-aspect (removes legacy jj-plan/jj-ask/jj-status)
+  uninstall:      remove jj-agentic-aspect + legacy binaries (config kept)
 env:
-  REPO=<owner>/<repo>   default yigegongjiang/jj-plan
+  REPO=<owner>/<repo>   default yigegongjiang/jj-agentic-aspect
   VERSION=latest|vX.Y.Z default latest
   INSTALL_DIR=<path>    default $HOME/.local/bin
 EOF
@@ -96,6 +99,17 @@ uninstall_one() {
   fi
 }
 
+remove_legacy() {
+  local name dest
+  for name in "${LEGACY_BINARIES[@]}"; do
+    dest="${INSTALL_DIR}/${name}"
+    if [ -e "$dest" ]; then
+      rm -f "$dest"
+      info "removed legacy binary: $dest"
+    fi
+  done
+}
+
 ACTION="${1:-install}"
 if [ "$#" -gt 1 ]; then
   err "too many arguments"
@@ -110,19 +124,21 @@ esac
 
 if [ "$ACTION" = "uninstall" ]; then
   for n in "${BINARIES[@]}"; do uninstall_one "$n"; done
-  info "config kept: ${XDG_CONFIG_HOME:-${HOME}/.config}/jj-plan/config.json (legacy ${XDG_CONFIG_HOME:-${HOME}/.config}/jjplan + ${HOME}/.jjplan still honoured)"
+  remove_legacy
+  info "config kept: ${XDG_CONFIG_HOME:-${HOME}/.config}/jj-agentic-aspect/config.json (legacy ${XDG_CONFIG_HOME:-${HOME}/.config}/jj-plan 等仍作只读 fallback)"
   exit 0
 fi
 
 mkdir -p "$INSTALL_DIR"
 
-info "==> installing jj-plan + jj-ask + jj-status"
+info "==> installing jj-agentic-aspect"
 info "    repo:    ${REPO}"
 info "    version: ${VERSION}"
 info "    arch:    darwin-${host_arch}"
 info "    target:  ${INSTALL_DIR}"
 
 for n in "${BINARIES[@]}"; do install_one "$n"; done
+remove_legacy
 
 case ":$PATH:" in
   *":${INSTALL_DIR}:"*) ;;

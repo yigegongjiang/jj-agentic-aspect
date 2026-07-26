@@ -111,8 +111,8 @@ export default function AskSearch({
             // not composing, so backing out of a half-typed word keeps the query.
             if (e.key === 'Escape' && !e.nativeEvent.isComposing) setQuery('');
           }}
-          placeholder="检索所有 jj-ask 记录 (关键词, 空格分隔可多词)"
-          aria-label="搜索 jj-ask"
+          placeholder="检索所有 ask 记录 (关键词, 空格分隔可多词)"
+          aria-label="搜索 ask"
           spellCheck={false}
           autoComplete="off"
           className="w-full pl-10 pr-9 py-2.5 rounded-lg bg-zinc-900 border border-zinc-800 focus:border-blue-500 focus:outline-none text-sm placeholder:text-zinc-600"

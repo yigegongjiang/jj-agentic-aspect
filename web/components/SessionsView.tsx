@@ -22,7 +22,7 @@ export default function SessionsView({ sessions, onOpen, onDelete }: Props) {
     return (
       <section>
         <div className="text-sm text-zinc-400 italic px-4 py-8 text-center">
-          (no sessions — 配置 Claude Code hooks 指向 `jj-status hook` 后自动记录)
+          (no sessions — 配置 agent hooks 指向 `jj-agentic-aspect hook` 后自动记录)
         </div>
       </section>
     );
@@ -66,8 +66,8 @@ function SessionCard({
       </div>
       <div className="mt-auto pt-1.5 flex items-center justify-between gap-2 border-t border-zinc-900">
         <span className="text-[11px] text-zinc-400 font-mono truncate">
-          {fmtTime(session.first_at)} · {fmtDuration(session.last_at - session.first_at)} ·{' '}
-          {session.events_count} events
+          <span className="text-zinc-500">{session.source}</span> · {fmtTime(session.first_at)} ·{' '}
+          {fmtDuration(session.last_at - session.first_at)} · {session.events_count} events
         </span>
         <div className="flex items-center gap-0.5 shrink-0">
           <span className="text-[10px] text-zinc-600 font-mono" title={session.session_id}>

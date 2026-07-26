@@ -1,12 +1,13 @@
 [package]
-name = "jj-plan-cli"
+name = "jj-agentic-aspect"
 version = "0.0.0"                 # unused; real version injected via build.rs -> JJ_VERSION
 edition = "2021"
-repository = "https://github.com/yigegongjiang/jj-plan"
+repository = "https://github.com/yigegongjiang/jj-agentic-aspect"
 publish = false
 
-# Two binaries (jj-plan + jj-ask) + one shared lib are auto-discovered from
-# src/bin/*.rs and src/lib.rs — no explicit [[bin]]/[lib] tables needed.
+# One binary (src/main.rs -> jj-agentic-aspect, subcommands plan/ask/hook) +
+# one lib (src/lib.rs, shared helpers + subcommand modules) — auto-discovered,
+# no explicit [[bin]]/[lib] tables needed.
 
 [dependencies]
 ureq = "2"                                                # blocking HTTP client (rustls TLS)

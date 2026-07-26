@@ -13,14 +13,14 @@
 # 调试
 
 ```sh
-cd cli && cargo build --release && ./target/release/jj-plan --version # CLI 验证
+cd cli && cargo build --release && ./target/release/jj-agentic-aspect --version # CLI 验证
 ```
 
 `--version` 输出须等于根 `VERSION`.
 
 # 发布
 
-push `v*` tag 触发 Actions: 部署 Worker + 编译 CLI 二进制 (jj-plan + jj-ask × x64/arm64) 附 Release.
+push `v*` tag 触发 Actions: 部署 Worker + 编译 CLI 二进制 (jj-agentic-aspect × x64/arm64) 附 Release.
 
 ## TL;DR
 
@@ -33,7 +33,7 @@ push `v*` tag 触发 Actions: 部署 Worker + 编译 CLI 二进制 (jj-plan + jj
 ## 1. 验证
 
 ```sh
-cd cli && cargo build --release && ./target/release/jj-plan --version
+cd cli && cargo build --release && ./target/release/jj-agentic-aspect --version
 ```
 
 `--version` 输出须等于根 `VERSION`. build / version 任一失败 → 停止.

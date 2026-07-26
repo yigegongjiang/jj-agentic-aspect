@@ -1,24 +1,19 @@
-// jj-ask binary: Q&A (human ask) logging. Thin HTTP client over the worker.
-use jj_plan_cli::{
-    api, die, die_usage, encode_uri_component, print, require_id, run_installer, validate_project,
+// `ask` subcommand: Q&A (human ask) logging. Thin HTTP client over the worker.
+use crate::{
+    api, die, die_usage, encode_uri_component, print, require_id, validate_project, ENTRY,
     ASK_LIMIT_DEFAULT, ASK_LIMIT_MAX, MAX_BODY_LEN, MAX_PROJECT_NAME_LEN, VERSION,
 };
 use serde_json::{Map, Value};
 
-const ENTRY: &str = "jj-ask";
-
 fn usage(key: &str) -> String {
     match key {
-        "help" => "jj-ask --help".into(),
-        "version" => "jj-ask --version".into(),
-        "update" => "jj-ask update | upgrade".into(),
-        "uninstall" => "jj-ask uninstall".into(),
-        "ask.new" => "jj-ask new <project> <body>".into(),
-        "ask.ls" => format!("jj-ask ls <project> [--limit N]   (default {ASK_LIMIT_DEFAULT}, max {ASK_LIMIT_MAX})"),
-        "ask.show" => "jj-ask show <id>".into(),
-        "ask.set" => "jj-ask set <id> --body <body>".into(),
-        "ask.rm" => "jj-ask rm <id>".into(),
-        _ => "jj-ask --help".into(),
+        "help" => "jj-agentic-aspect ask --help".into(),
+        "ask.new" => "jj-agentic-aspect ask new <project> <body>".into(),
+        "ask.ls" => format!("jj-agentic-aspect ask ls <project> [--limit N]   (default {ASK_LIMIT_DEFAULT}, max {ASK_LIMIT_MAX})"),
+        "ask.show" => "jj-agentic-aspect ask show <id>".into(),
+        "ask.set" => "jj-agentic-aspect ask set <id> --body <body>".into(),
+        "ask.rm" => "jj-agentic-aspect ask rm <id>".into(),
+        _ => "jj-agentic-aspect ask --help".into(),
     }
 }
 
@@ -129,7 +124,7 @@ fn parse_set_args(args: &[String]) -> (String, String) {
     (id, body)
 }
 
-fn run(verb: &str, rest: &[String]) {
+fn dispatch(verb: &str, rest: &[String]) {
     match verb {
         "new" => {
             let (project, body) = parse_new_args(rest);
@@ -155,11 +150,27 @@ fn run(verb: &str, rest: &[String]) {
             let id = require_id(ENTRY, rest.first(), tail(rest), &usage("ask.rm"));
             api(ENTRY, "DELETE", &format!("/asks/{}", encode_uri_component(&id)), None);
         }
-        _ => fail(&format!("unknown command '{verb}'; usage: {}", usage("help"))),
+        _ => fail(&format!("unknown command 'ask {verb}'; usage: {}", usage("help"))),
     }
 }
 
-fn print_help() {
+/// Entry from main: argv is everything after `ask`.
+pub fn run(argv: &[String]) {
+    let head = argv.first().map(String::as_str);
+    if argv.is_empty() || head == Some("help") || head == Some("-h") || head == Some("--help") {
+        if argv.len() > 1 {
+            fail_usage("help", &format!("unexpected argument {}", argv[1]));
+        }
+        print_help();
+        return;
+    }
+
+    let verb = &argv[0];
+    let rest = argv.get(1..).unwrap_or(&[]);
+    dispatch(verb, rest);
+}
+
+pub fn print_help() {
     let help = HELP
         .replace("{VERSION}", VERSION)
         .replace("{MAX_BODY_LEN}", &MAX_BODY_LEN.to_string())
@@ -169,54 +180,16 @@ fn print_help() {
     print!("{help}");
 }
 
-fn main() {
-    let argv: Vec<String> = std::env::args().skip(1).collect();
-
-    let head = argv.first().map(String::as_str);
-    if argv.is_empty() || head == Some("help") || head == Some("-h") || head == Some("--help") {
-        if argv.len() > 1 {
-            fail_usage("help", &format!("unexpected argument {}", argv[1]));
-        }
-        print_help();
-        return;
-    }
-    if head == Some("-v") || head == Some("--version") {
-        if argv.len() > 1 {
-            fail_usage("version", &format!("unexpected argument {}", argv[1]));
-        }
-        println!("{VERSION}");
-        return;
-    }
-    if head == Some("update") || head == Some("upgrade") {
-        if argv.len() > 1 {
-            fail_usage("update", &format!("unexpected argument {}", argv[1]));
-        }
-        run_installer(ENTRY, &[]);
-        return;
-    }
-    if head == Some("uninstall") {
-        if argv.len() > 1 {
-            fail_usage("uninstall", &format!("unexpected argument {}", argv[1]));
-        }
-        run_installer(ENTRY, &["--uninstall"]);
-        return;
-    }
-
-    let verb = &argv[0];
-    let rest = argv.get(1..).unwrap_or(&[]);
-    run(verb, rest);
-}
-
-const HELP: &str = r#"jj-ask {VERSION}
+const HELP: &str = r#"jj-agentic-aspect ask {VERSION}
 
 # TLDR
-jj-ask: 落盘人类抛给 AI 的请求 (Q&A 记录). 两层模型 project -> ask, id=ULID. <project>=cwd basename.
+ask: 落盘人类抛给 AI 的请求 (Q&A 记录). 两层模型 project -> ask, id=ULID. <project>=cwd basename.
 每条 ask 都是独立记录, 不串链.
 
-  jj-ask new <project> <body>
+  jj-agentic-aspect ask new <project> <body>
     # body=用户原话原文照搬.
 
-输出: stdout 单行 JSON. body 不读 stdin (位置参数). 查询/修改/删除见 jj-ask --help.
+输出: stdout 单行 JSON. body 不读 stdin (位置参数). 查询/修改/删除见 jj-agentic-aspect ask --help.
 
 # PURPOSE
 落盘人类抛给 AI 的请求.
@@ -228,26 +201,23 @@ project (name) -- ask (id=ULID)
 - project rm 级联删全部 ask.
 
 # I/O
-- 输出: stdout 单行 JSON; DELETE 空 (204). 错误: stderr `jj-ask: <msg>` + 非零 exit.
+- 输出: stdout 单行 JSON; DELETE 空 (204). 错误: stderr `jj-agentic-aspect: <msg>` + 非零 exit.
 - <body> / --body 是位置/flag 参数, 不读 stdin.
 - 限长 (chars): body 1..{MAX_BODY_LEN}, project 1..{MAX_PROJECT_NAME_LEN}.
 
 # COMMANDS
 
-jj-ask --help | --version
-jj-ask update | upgrade | uninstall       仅在用户明确要求时执行 (同时影响 jj-plan; update/upgrade 等价)
-
-jj-ask new <project> <body>
+jj-agentic-aspect ask new <project> <body>
   -> {id, project_id, body, created_at, updated_at}
-jj-ask ls <project> [--limit N]   (default {ASK_LIMIT_DEFAULT}, max {ASK_LIMIT_MAX}, by updated_at DESC)
+jj-agentic-aspect ask ls <project> [--limit N]   (default {ASK_LIMIT_DEFAULT}, max {ASK_LIMIT_MAX}, by updated_at DESC)
   -> [{...ask}]
   err: 404
-jj-ask show <id>
+jj-agentic-aspect ask show <id>
   -> {...ask}
   err: 404
-jj-ask set <id> --body <body>
+jj-agentic-aspect ask set <id> --body <body>
   -> {...ask}
   err: 400 | 404
-jj-ask rm <id>
+jj-agentic-aspect ask rm <id>
   err: 404
 "#;

@@ -1,8 +1,8 @@
 name: release
 
 # Triggered by pushing a version tag (e.g. v0.1.0). Two independent jobs run
-# in parallel: deploy the Worker to Cloudflare, and compile the CLI binaries
-# and attach them to the GitHub Release for that tag.
+# in parallel: deploy the Worker to Cloudflare, and compile the CLI binary
+# and attach it to the GitHub Release for that tag.
 
 on:
   push:
@@ -42,6 +42,8 @@ jobs:
       # Apply D1 migrations BEFORE deploying the worker so the live runtime
       # never sees a stale schema/data state. wrangler d1 migrations apply is
       # idempotent — already-applied entries in d1_migrations are skipped.
+      # "jjplan" is the D1 database label (no rename in D1; data predates the
+      # jj-agentic-aspect rename).
       - name: Apply D1 migrations (remote)
         uses: cloudflare/wrangler-action@v3
         with:
@@ -79,21 +81,19 @@ jobs:
       - name: Add Rust targets
         run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
 
-      - name: Compile macOS binaries (jj-plan + jj-ask + jj-status × arm64 + x64)
+      - name: Compile macOS binaries (jj-agentic-aspect × arm64 + x64)
         working-directory: cli
         run: cargo build --release --target aarch64-apple-darwin --target x86_64-apple-darwin
 
       # Map cargo target triples to the asset names install.sh expects
-      # (jj-{plan,ask}-macos-{arm64,x64}).
+      # (jj-agentic-aspect-macos-{arm64,x64}).
       - name: Assemble release assets
         working-directory: cli
         run: |
           mkdir -p dist
           for pair in "aarch64-apple-darwin:arm64" "x86_64-apple-darwin:x64"; do
             triple="${pair%%:*}"; arch="${pair##*:}"
-            for bin in jj-plan jj-ask jj-status; do
-              cp "target/$triple/release/$bin" "dist/$bin-macos-$arch"
-            done
+            cp "target/$triple/release/jj-agentic-aspect" "dist/jj-agentic-aspect-macos-$arch"
           done
           ls -la dist
 
@@ -101,7 +101,7 @@ jobs:
         working-directory: cli/dist
         run: |
           shopt -s nullglob
-          files=( jj-plan-macos-* jj-ask-macos-* jj-status-macos-* )
+          files=( jj-agentic-aspect-macos-* )
           [ ${#files[@]} -gt 0 ] || { echo "no build artifacts found in cli/dist" >&2; exit 1; }
           shasum -a 256 "${files[@]}" > checksums.txt
           cat checksums.txt
@@ -112,7 +112,5 @@ jobs:
           generate_release_notes: true
           fail_on_unmatched_files: true
           files: |
-            cli/dist/jj-plan-macos-*
-            cli/dist/jj-ask-macos-*
-            cli/dist/jj-status-macos-*
+            cli/dist/jj-agentic-aspect-macos-*
             cli/dist/checksums.txt

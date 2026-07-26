@@ -1,5 +1,5 @@
 {
-  "name": "jj-plan-worker",
+  "name": "jj-agentic-aspect-worker",
   "private": true,
   "type": "module",
   "scripts": {

@@ -1,11 +1,16 @@
-//! Shared helpers for the jj-plan + jj-ask binaries.
-//! Flat module, no submodules. Each binary entry imports what it needs.
+//! jj-agentic-aspect: one binary, three subcommands (plan / ask / hook).
+//! This crate root holds the shared helpers; each subcommand lives in its own
+//! module below and is dispatched from src/main.rs.
 //!
 //! The CLI is a thin HTTP client over the Cloudflare Worker API. It holds no
 //! local state. Auth is a Cloudflare Access service token only — the endpoint
 //! sits behind Cloudflare Access, which validates the service-token pair at the
 //! edge and injects the JWT the worker trusts. (The old bearer-token mode was
 //! dead against the Access-protected endpoint and has been dropped.)
+
+pub mod ask;
+pub mod hook;
+pub mod plan;
 
 use std::io::{IsTerminal, Read, Write};
 use std::path::PathBuf;
@@ -16,7 +21,10 @@ use serde_json::Value;
 // Injected by build.rs from the repo-root VERSION file.
 pub const VERSION: &str = env!("JJ_VERSION");
 
-pub const INSTALL_URL: &str = "https://raw.githubusercontent.com/yigegongjiang/jj-plan/main/scripts/install.sh";
+pub const INSTALL_URL: &str = "https://raw.githubusercontent.com/yigegongjiang/jj-agentic-aspect/main/scripts/install.sh";
+
+/// Binary name == error-message prefix for every subcommand.
+pub const ENTRY: &str = "jj-agentic-aspect";
 
 pub const SPEC_STATUSES: &[&str] = &["active", "done"];
 pub const TASK_STATUSES: &[&str] = &["todo", "doing", "done", "blocked"];
@@ -43,9 +51,10 @@ pub fn die_usage(entry: &str, usage: &str, reason: &str) -> ! {
 
 // ─── config ───────────────────────────────────────────────────────────────
 
-/// Config lives at $XDG_CONFIG_HOME/jj-plan/config.json (default
-/// ~/.config/jj-plan/config.json). Two legacy paths stay honoured as read-only
-/// fallbacks so older installs keep working without a move:
+/// Config lives at $XDG_CONFIG_HOME/jj-agentic-aspect/config.json (default
+/// ~/.config/jj-agentic-aspect/config.json). Legacy paths stay honoured as
+/// read-only fallbacks so older installs keep working without a move:
+///   - $XDG_CONFIG_HOME/jj-plan/config.json (0.14–0.16, pre jj-agentic-aspect)
 ///   - $XDG_CONFIG_HOME/jjplan/config.json  (0.12–0.13, pre-rename XDG path)
 ///   - ~/.jjplan/config.json                (pre-0.12)
 pub struct Config {
@@ -66,7 +75,7 @@ fn config_home() -> PathBuf {
 }
 
 pub fn config_path() -> PathBuf {
-    config_home().join("jj-plan").join("config.json")
+    config_home().join("jj-agentic-aspect").join("config.json")
 }
 
 // Canonical path wins; legacy paths are read only when canonical is absent, in
@@ -78,6 +87,7 @@ fn resolve_config_path() -> PathBuf {
         return canonical;
     }
     let legacy = [
+        config_home().join("jj-plan").join("config.json"),
         config_home().join("jjplan").join("config.json"),
         PathBuf::from(home()).join(".jjplan").join("config.json"),
     ];
@@ -89,9 +99,9 @@ fn resolve_config_path() -> PathBuf {
     canonical
 }
 
-/// Fallible config load. The regular CLI path wraps it in `die`; the
-/// `jj-status hook` path must never kill the hosting hook, so it consumes the
-/// Err silently instead.
+/// Fallible config load. The regular CLI path wraps it in `die`; the hook
+/// ingest path must never kill the hosting session, so it consumes the Err
+/// silently instead.
 pub fn try_load_config() -> Result<Config, String> {
     let path = resolve_config_path();
     let raw = std::fs::read_to_string(&path)

@@ -64,7 +64,7 @@ export default function SessionDetail({ project, sessionId, onUnauthorized }: Pr
         <span className="text-xs font-mono text-zinc-500 break-all">{sessionId}</span>
         {events.length > 0 && (
           <span className="text-xs text-zinc-400 font-mono">
-            {fmtTime(events[0].created_at)} ·{' '}
+            {events[0].source} · {fmtTime(events[0].created_at)} ·{' '}
             {fmtDuration(events[events.length - 1].created_at - events[0].created_at)} ·{' '}
             {events.length} events
           </span>
