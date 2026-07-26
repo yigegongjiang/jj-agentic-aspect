@@ -537,9 +537,7 @@ export default function Dashboard() {
           />
         ) : route.kind === 'project' && activeProject ? (
           <ProjectTabs
-            askCount={
-              asksProject === activeProject.name ? (asks?.length ?? 0) : 0
-            }
+            askCount={activeProject.asks_count}
             specCount={activeProject.specs.length}
             taskCount={activeProject.specs.reduce(
               (n, s) => n + s.tasks.length,
@@ -551,6 +549,7 @@ export default function Dashboard() {
                 sessions={
                   sessionsProject === activeProject.name ? sessions : null
                 }
+                total={activeProject.sessions_count}
                 onOpen={(sessionId) =>
                   navigate({
                     kind: 'session',
@@ -571,6 +570,7 @@ export default function Dashboard() {
             asks={
               <AsksView
                 asks={asksProject === activeProject.name ? asks : null}
+                total={activeProject.asks_count}
                 onEdit={(ask) => {
                   setEditError(null);
                   setEdit({ kind: 'ask', ask });

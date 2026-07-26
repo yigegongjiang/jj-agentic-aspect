@@ -7,11 +7,13 @@ import type { Ask } from '@/lib/types';
 
 interface Props {
   asks: Ask[] | null;
+  // 项目全量 ask 数 (来自 /projects 的 COUNT); 列表接口有 limit 上限, 用于截断提示
+  total: number;
   onEdit: (ask: Ask) => void;
   onDelete: (ask: Ask) => void;
 }
 
-export default function AsksView({ asks, onEdit, onDelete }: Props) {
+export default function AsksView({ asks, total, onEdit, onDelete }: Props) {
   if (asks === null) {
     return (
       <section>
@@ -31,15 +33,22 @@ export default function AsksView({ asks, onEdit, onDelete }: Props) {
   }
 
   return (
-    <section className="grid gap-2 [grid-template-columns:repeat(auto-fill,minmax(min(20rem,100%),1fr))]">
-      {asks.map((ask) => (
-        <AskCard
-          key={ask.id}
-          ask={ask}
-          onEdit={() => onEdit(ask)}
-          onDelete={() => onDelete(ask)}
-        />
-      ))}
+    <section>
+      <div className="grid gap-2 [grid-template-columns:repeat(auto-fill,minmax(min(20rem,100%),1fr))]">
+        {asks.map((ask) => (
+          <AskCard
+            key={ask.id}
+            ask={ask}
+            onEdit={() => onEdit(ask)}
+            onDelete={() => onDelete(ask)}
+          />
+        ))}
+      </div>
+      {total > asks.length && (
+        <div className="pt-3 text-center text-[11px] text-zinc-500 font-mono">
+          showing latest {asks.length} of {total}
+        </div>
+      )}
     </section>
   );
 }

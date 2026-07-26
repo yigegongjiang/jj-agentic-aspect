@@ -9,6 +9,15 @@
 
 > 历史 27 版 (≤ 0.8.23) 在双文件分界确立前写成, 原文照搬未回填; 用户向 / 开发向严格分界自 **0.8.24** 起执行.
 
+## [0.19.1] - 2026-07-26
+
+### Fixed
+
+- 项目页 ASKS tab 计数不再卡在 100: 此前显示的是已加载列表长度 (上限 100), 现改为项目真实总数。
+  - `web/components/Dashboard.tsx`: ProjectTabs `askCount` 改用 `activeProject.asks_count` (来自 `GET /projects` 的 `COUNT(*)`), 不再取 `asks.length` (listAsks `limit=ASK_LIMIT_MAX=100` 截断)。
+- asks / sessions 列表仅展示最新一批时, 底部提示 `showing latest N of M`, 不再让人误以为数据丢失。
+  - `web/components/AsksView.tsx` / `SessionsView.tsx`: 新增 `total` prop (asks_count / sessions_count), `total > list.length` 时渲染截断脚注; 列表接口 limit (asks 100 / sessions 200) 与后端契约不变。
+
 ## [0.19.0] - 2026-07-26
 
 ### Changed
