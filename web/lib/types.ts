@@ -40,12 +40,8 @@ export interface Project {
   sessions_count: number;
 }
 
-export const ASK_LIMIT_DEFAULT = 3;
-export const ASK_LIMIT_MAX = 100;
-
-// Cross-project ask search (GET /asks?q=). Mirrors the worker's search bounds.
-export const ASK_SEARCH_LIMIT_DEFAULT = 50;
-export const ASK_SEARCH_LIMIT_MAX = 200;
+// List endpoints accept limit=0 = all rows; the dashboard always fetches all.
+export const LIMIT_ALL = 0;
 
 export interface Ask {
   id: string;
@@ -57,9 +53,6 @@ export interface Ask {
 
 // Agent hook session events (GET /projects/:name/sessions[...]).
 // source = which agent emitted the events (claude-code / codex / ...).
-export const SESSION_LIST_LIMIT_DEFAULT = 50;
-export const SESSION_LIST_LIMIT_MAX = 200;
-
 export interface SessionSummary {
   session_id: string;
   source: string;

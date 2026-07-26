@@ -33,7 +33,6 @@ pub const MAX_BODY_LEN: usize = 65536;
 pub const MAX_PROJECT_NAME_LEN: usize = 128;
 
 pub const ASK_LIMIT_DEFAULT: u32 = 3;
-pub const ASK_LIMIT_MAX: u32 = 100;
 
 // ─── error helpers ──────────────────────────────────────────────────────────
 

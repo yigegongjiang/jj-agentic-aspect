@@ -6,13 +6,11 @@ import type { SessionSummary } from '@/lib/types';
 
 interface Props {
   sessions: SessionSummary[] | null;
-  // 项目全量 session 数 (来自 /projects 的 COUNT); 列表接口有 limit 上限, 用于截断提示
-  total: number;
   onOpen: (sessionId: string) => void;
   onDelete: (session: SessionSummary) => void;
 }
 
-export default function SessionsView({ sessions, total, onOpen, onDelete }: Props) {
+export default function SessionsView({ sessions, onOpen, onDelete }: Props) {
   if (sessions === null) {
     return (
       <section>
@@ -32,22 +30,15 @@ export default function SessionsView({ sessions, total, onOpen, onDelete }: Prop
   }
 
   return (
-    <section>
-      <div className="grid gap-2 [grid-template-columns:repeat(auto-fill,minmax(min(20rem,100%),1fr))]">
-        {sessions.map((s) => (
-          <SessionCard
-            key={s.session_id}
-            session={s}
-            onOpen={() => onOpen(s.session_id)}
-            onDelete={() => onDelete(s)}
-          />
-        ))}
-      </div>
-      {total > sessions.length && (
-        <div className="pt-3 text-center text-[11px] text-zinc-500 font-mono">
-          showing latest {sessions.length} of {total}
-        </div>
-      )}
+    <section className="grid gap-2 [grid-template-columns:repeat(auto-fill,minmax(min(20rem,100%),1fr))]">
+      {sessions.map((s) => (
+        <SessionCard
+          key={s.session_id}
+          session={s}
+          onOpen={() => onOpen(s.session_id)}
+          onDelete={() => onDelete(s)}
+        />
+      ))}
     </section>
   );
 }

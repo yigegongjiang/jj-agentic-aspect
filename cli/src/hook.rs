@@ -138,15 +138,18 @@ fn fit_body(payload: &Value) -> String {
     serde_json::to_string(&Value::Object(skeleton)).unwrap_or_else(|_| "{\"_truncated\":true}".into())
 }
 
-/// Project = basename of the session's cwd (from the hook JSON), falling back
-/// to $CLAUDE_PROJECT_DIR, then the hook process cwd.
+/// Project = basename of $CLAUDE_PROJECT_DIR (the session's start directory,
+/// stable for the whole session), falling back to the hook JSON cwd, then the
+/// hook process cwd. The JSON cwd follows the session shell — an agent that
+/// cd's into a subdirectory would otherwise split the session into a bogus
+/// project named after that subdirectory.
 fn project_name(payload: &Value) -> Option<String> {
-    let from_json = payload.get("cwd").and_then(Value::as_str).map(str::to_string);
     let from_env = std::env::var("CLAUDE_PROJECT_DIR").ok().filter(|s| !s.is_empty());
+    let from_json = payload.get("cwd").and_then(Value::as_str).map(str::to_string);
     let from_proc = std::env::current_dir()
         .ok()
         .map(|p| p.to_string_lossy().into_owned());
-    for dir in [from_json, from_env, from_proc].into_iter().flatten() {
+    for dir in [from_env, from_json, from_proc].into_iter().flatten() {
         if let Some(base) = std::path::Path::new(&dir).file_name() {
             let name = base.to_string_lossy().into_owned();
             if !name.is_empty() {
@@ -340,7 +343,8 @@ hook: 落盘 agent hook 的 session 运行事件. 层级 project -> session -> e
 
 # MODEL
 project (name) -- session (session_id, 来自宿主 agent) -- event (id=ULID, 追加只读)
-- project 自动 upsert; project = hook JSON 的 cwd basename (回退 $CLAUDE_PROJECT_DIR / 进程 cwd).
+- project 自动 upsert; project = $CLAUDE_PROJECT_DIR basename (回退 hook JSON cwd / 进程 cwd; session 内 cd 不改归属).
+- 同一 session_id 的后续事件固定归入其首个事件所在 project (worker 端 session affinity), 不随 cwd 漂移.
 - event 带 source (上报方: claude-code / codex / ..., 默认 claude-code), 不可修改; 删除只按整个 session.
 - project rm 级联删全部 event.
 

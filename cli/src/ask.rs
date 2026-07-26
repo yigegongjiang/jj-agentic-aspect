@@ -1,7 +1,7 @@
 // `ask` subcommand: Q&A (human ask) logging. Thin HTTP client over the worker.
 use crate::{
     api, die, die_usage, encode_uri_component, print, require_id, validate_project, ENTRY,
-    ASK_LIMIT_DEFAULT, ASK_LIMIT_MAX, MAX_BODY_LEN, MAX_PROJECT_NAME_LEN, VERSION,
+    ASK_LIMIT_DEFAULT, MAX_BODY_LEN, MAX_PROJECT_NAME_LEN, VERSION,
 };
 use serde_json::{Map, Value};
 
@@ -9,7 +9,7 @@ fn usage(key: &str) -> String {
     match key {
         "help" => "jj-agentic-aspect ask --help".into(),
         "ask.new" => "jj-agentic-aspect ask new <project> <body>".into(),
-        "ask.ls" => format!("jj-agentic-aspect ask ls <project> [--limit N]   (default {ASK_LIMIT_DEFAULT}, max {ASK_LIMIT_MAX})"),
+        "ask.ls" => format!("jj-agentic-aspect ask ls <project> [--limit N]   (default {ASK_LIMIT_DEFAULT}, 0 = all)"),
         "ask.show" => "jj-agentic-aspect ask show <id>".into(),
         "ask.set" => "jj-agentic-aspect ask set <id> --body <body>".into(),
         "ask.rm" => "jj-agentic-aspect ask rm <id>".into(),
@@ -74,8 +74,8 @@ fn parse_ls_args(args: &[String]) -> (String, Option<u32>) {
                 _ => fail_usage("ask.ls", "missing <N> after --limit"),
             };
             match v.parse::<u32>() {
-                Ok(n) if (1..=ASK_LIMIT_MAX).contains(&n) => limit = Some(n),
-                _ => fail_usage("ask.ls", &format!("--limit must be integer in 1..{ASK_LIMIT_MAX}")),
+                Ok(n) => limit = Some(n),
+                _ => fail_usage("ask.ls", "--limit must be integer >= 0 (0 = all)"),
             }
         } else if arg.starts_with("--") {
             fail_usage("ask.ls", &format!("unknown option {arg}"));
@@ -175,8 +175,7 @@ pub fn print_help() {
         .replace("{VERSION}", VERSION)
         .replace("{MAX_BODY_LEN}", &MAX_BODY_LEN.to_string())
         .replace("{MAX_PROJECT_NAME_LEN}", &MAX_PROJECT_NAME_LEN.to_string())
-        .replace("{ASK_LIMIT_DEFAULT}", &ASK_LIMIT_DEFAULT.to_string())
-        .replace("{ASK_LIMIT_MAX}", &ASK_LIMIT_MAX.to_string());
+        .replace("{ASK_LIMIT_DEFAULT}", &ASK_LIMIT_DEFAULT.to_string());
     print!("{help}");
 }
 
@@ -209,7 +208,7 @@ project (name) -- ask (id=ULID)
 
 jj-agentic-aspect ask new <project> <body>
   -> {id, project_id, body, created_at, updated_at}
-jj-agentic-aspect ask ls <project> [--limit N]   (default {ASK_LIMIT_DEFAULT}, max {ASK_LIMIT_MAX}, by updated_at DESC)
+jj-agentic-aspect ask ls <project> [--limit N]   (default {ASK_LIMIT_DEFAULT}, 0 = all, by updated_at DESC)
   -> [{...ask}]
   err: 404
 jj-agentic-aspect ask show <id>

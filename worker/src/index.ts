@@ -83,7 +83,6 @@ interface SessionSummary {
 }
 
 const ASK_LIMIT_DEFAULT = 3;
-const ASK_LIMIT_MAX = 100;
 
 const MAX_SESSION_ID_LEN = 128;
 const MAX_EVENT_LEN = 64;
@@ -92,19 +91,26 @@ const MAX_EVENT_LEN = 64;
 const MAX_SOURCE_LEN = 64;
 const DEFAULT_SOURCE = 'claude-code';
 const SESSION_LIST_LIMIT_DEFAULT = 50;
-const SESSION_LIST_LIMIT_MAX = 200;
 // Hard cap on events returned for one session. Client-side truncation keeps
 // individual bodies small; this bounds the worst-case payload.
 const SESSION_EVENTS_LIMIT = 5000;
 // Session-card preview length (chars) for the first user prompt.
 const SESSION_PROMPT_PREVIEW_LEN = 300;
 
-// Cross-project ask search: separate, more generous bounds than the per-project
-// list above. A keyword search wants to surface many matches at once; the cap
-// keeps the payload bounded as the ask store grows.
+// Cross-project ask search: more generous default than the per-project list.
 const ASK_SEARCH_LIMIT_DEFAULT = 50;
-const ASK_SEARCH_LIMIT_MAX = 200;
 const ASK_SEARCH_MAX_TERMS = 16;
+
+// List-endpoint `limit`: omitted → per-endpoint default; 0 → everything
+// (SQLite `LIMIT -1` = unbounded). No upper cap — the store is personal-scale
+// and the dashboard must be able to show all rows; revisit only if payloads
+// actually grow past what one response can carry.
+function parseLimit(raw: string | undefined, dflt: number): number | null {
+  if (raw === undefined) return dflt;
+  const n = Number(raw);
+  if (!Number.isInteger(n) || n < 0) return null;
+  return n === 0 ? -1 : n;
+}
 
 const app = new Hono<{ Bindings: Bindings }>();
 
@@ -954,14 +960,9 @@ app.get('/projects/:name/asks', async (c) => {
   const project = await readProject(c.env.DB, name);
   if (!project) return c.json({ error: 'project not found' }, 404);
 
-  const rawLimit = c.req.query('limit');
-  let limit = ASK_LIMIT_DEFAULT;
-  if (rawLimit !== undefined) {
-    const n = Number(rawLimit);
-    if (!Number.isInteger(n) || n < 1 || n > ASK_LIMIT_MAX) {
-      return c.json({ error: `limit must be integer in 1..${ASK_LIMIT_MAX}` }, 400);
-    }
-    limit = n;
+  const limit = parseLimit(c.req.query('limit'), ASK_LIMIT_DEFAULT);
+  if (limit === null) {
+    return c.json({ error: 'limit must be integer >= 0 (0 = all)' }, 400);
   }
 
   const { results } = await c.env.DB
@@ -996,14 +997,9 @@ app.get('/asks', async (c) => {
     .slice(0, ASK_SEARCH_MAX_TERMS);
   if (terms.length === 0) return c.json([]);
 
-  const rawLimit = c.req.query('limit');
-  let limit = ASK_SEARCH_LIMIT_DEFAULT;
-  if (rawLimit !== undefined) {
-    const n = Number(rawLimit);
-    if (!Number.isInteger(n) || n < 1 || n > ASK_SEARCH_LIMIT_MAX) {
-      return c.json({ error: `limit must be integer in 1..${ASK_SEARCH_LIMIT_MAX}` }, 400);
-    }
-    limit = n;
+  const limit = parseLimit(c.req.query('limit'), ASK_SEARCH_LIMIT_DEFAULT);
+  if (limit === null) {
+    return c.json({ error: 'limit must be integer >= 0 (0 = all)' }, 400);
   }
 
   const where = terms.map(() => "body LIKE ? ESCAPE '\\'").join(' AND ');
@@ -1110,23 +1106,33 @@ app.post('/projects/:name/statuses', async (c) => {
   const parsed = parseStatusPayload(parsedBody.value);
   if (!parsed.ok) return c.json({ error: parsed.error }, 400);
 
+  // Session affinity: a session's events always land in the project that saw
+  // its first event. The hook derives the project from cwd, which drifts when
+  // the agent cd's into a subdirectory mid-session — without pinning, one
+  // session splits across a bogus project named after that subdirectory.
+  const pinned = await c.env.DB
+    .prepare('SELECT project_id FROM statuses WHERE session_id = ? ORDER BY id LIMIT 1')
+    .bind(parsed.value.session_id)
+    .first<{ project_id: string }>();
+  const project = pinned?.project_id ?? name;
+
   const id = ulid();
   const t = now();
   await c.env.DB.batch([
     c.env.DB
       .prepare('INSERT OR IGNORE INTO projects (name, created_at, updated_at) VALUES (?, ?, ?)')
-      .bind(name, t, t),
+      .bind(project, t, t),
     c.env.DB
       .prepare(
         'INSERT INTO statuses (id, project_id, session_id, event, source, body, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
       )
-      .bind(id, name, parsed.value.session_id, parsed.value.event, parsed.value.source, parsed.value.body, t),
-    bumpProject(c.env.DB, name, t),
+      .bind(id, project, parsed.value.session_id, parsed.value.event, parsed.value.source, parsed.value.body, t),
+    bumpProject(c.env.DB, project, t),
   ]);
   return c.json(
     {
       id,
-      project_id: name,
+      project_id: project,
       session_id: parsed.value.session_id,
       event: parsed.value.event,
       source: parsed.value.source,
@@ -1149,14 +1155,9 @@ app.get('/projects/:name/sessions', async (c) => {
   const project = await readProject(c.env.DB, name);
   if (!project) return c.json({ error: 'project not found' }, 404);
 
-  const rawLimit = c.req.query('limit');
-  let limit = SESSION_LIST_LIMIT_DEFAULT;
-  if (rawLimit !== undefined) {
-    const n = Number(rawLimit);
-    if (!Number.isInteger(n) || n < 1 || n > SESSION_LIST_LIMIT_MAX) {
-      return c.json({ error: `limit must be integer in 1..${SESSION_LIST_LIMIT_MAX}` }, 400);
-    }
-    limit = n;
+  const limit = parseLimit(c.req.query('limit'), SESSION_LIST_LIMIT_DEFAULT);
+  if (limit === null) {
+    return c.json({ error: 'limit must be integer >= 0 (0 = all)' }, 400);
   }
 
   const { results } = await c.env.DB

@@ -9,6 +9,24 @@
 
 > 历史 27 版 (≤ 0.8.23) 在双文件分界确立前写成, 原文照搬未回填; 用户向 / 开发向严格分界自 **0.8.24** 起执行.
 
+## [0.20.0] - 2026-07-26
+
+### Changed
+
+- 取消列表数量上限, 数据保证看得全: 项目页 asks / sessions 列表与首页 ask 搜索返回全部记录 (原上限 asks 100 / sessions 200 / 搜索 200 条); API 与 `ask ls` 的 limit 新增 `0` = 全量, 省略时默认值不变。
+  - `worker/src/index.ts`: 三个列表/搜索端点共用 `parseLimit` — 省略 → 各自默认 (asks 3 / sessions 50 / 搜索 50), `0` → SQLite `LIMIT -1` (全量); 上限校验与 `*_LIMIT_MAX` 常量删除, 仅放宽入参, 旧合法请求行为不变。
+  - `web`: Dashboard / AskSearch 统一 `limit=0` 拉全量 (`LIMIT_ALL`); AsksView / SessionsView 截断脚注与 AskSearch capped 提示移除 (0.19.1 引入, 已无触发条件)。
+  - `cli/src/ask.rs`: `ask ls --limit N` 接受 `0` = 全量, max 100 校验移除; usage / help 同步。
+
+### Fixed
+
+- session 不再被拆进以子目录命名的伪项目: 会话中途 cd 进子目录后, 后续事件曾按新目录名另立项目 (如 worker/web/cli); 现在 session 全程固定归属其起始项目。
+  - `cli/src/hook.rs`: `project_name` 优先级改为 `$CLAUDE_PROJECT_DIR` (session 起始目录, 全程稳定) -> hook JSON `cwd` -> 进程 cwd; HELP # MODEL 同步。
+  - `worker/src/index.ts`: `POST /projects/:name/statuses` 加 session affinity — 先查该 session_id 首个事件 (`ORDER BY id LIMIT 1`) 的 project_id, 命中则事件归入该 project (覆盖 codex 等无稳定 env 的 source)。
+  - `worker/migrations/0007_add_statuses_session_index.sql`: `statuses(session_id)` 索引, 支撑跨 project 的 affinity 查询。
+- 存量被拆散的 session 事件已按各自会话的起始项目归位, 由此产生的空伪项目已清理。
+  - 远程 D1 一次性 UPDATE: `statuses.project_id` 统一为该 session 最早事件的 project_id; 归位后无 specs/asks/statuses 的伪 project 删除。
+
 ## [0.19.1] - 2026-07-26
 
 ### Fixed

@@ -10,7 +10,7 @@ import {
 
 import { ApiError, api } from '@/lib/api';
 import { fmtTime } from '@/lib/format';
-import { ASK_SEARCH_LIMIT_MAX, type Ask } from '@/lib/types';
+import { LIMIT_ALL, type Ask } from '@/lib/types';
 import { PROJECT_TAB_STORAGE_KEY } from './ProjectTabs';
 
 interface Props {
@@ -60,7 +60,7 @@ export default function AskSearch({
     setError(null);
     const handle = window.setTimeout(() => {
       api
-        .searchAsks(trimmed, ASK_SEARCH_LIMIT_MAX)
+        .searchAsks(trimmed, LIMIT_ALL)
         .then((data) => {
           if (rid !== reqIdRef.current) return;
           setResults(data);
@@ -88,8 +88,6 @@ export default function AskSearch({
     }
     onOpenProject(name);
   }
-
-  const capped = results !== null && results.length >= ASK_SEARCH_LIMIT_MAX;
 
   return (
     <div className="space-y-4">
@@ -136,7 +134,6 @@ export default function AskSearch({
           error={error}
           results={results}
           terms={terms}
-          capped={capped}
           onOpenProject={openProject}
         />
       )}
@@ -149,7 +146,6 @@ interface ResultsProps {
   error: string | null;
   results: Ask[] | null;
   terms: string[];
-  capped: boolean;
   onOpenProject: (name: string) => void;
 }
 
@@ -158,7 +154,6 @@ function SearchResults({
   error,
   results,
   terms,
-  capped,
   onOpenProject,
 }: ResultsProps) {
   if (error) {
@@ -185,12 +180,8 @@ function SearchResults({
       <div className="flex items-center gap-2 px-1 text-[11px] text-zinc-500 font-mono">
         <span>
           {results.length} {results.length === 1 ? 'result' : 'results'}
-          {capped ? '+' : ''}
         </span>
         {loading && <span className="text-zinc-600">· searching…</span>}
-        {capped && (
-          <span className="text-zinc-600">· 显示前 {results.length} 条, 请细化关键词</span>
-        )}
       </div>
       <div className="grid gap-2 [grid-template-columns:repeat(auto-fill,minmax(min(22rem,100%),1fr))]">
         {results.map((ask) => (

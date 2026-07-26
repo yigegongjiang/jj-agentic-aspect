@@ -4,8 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 
 import { ApiError, api } from '@/lib/api';
 import {
-  ASK_LIMIT_MAX,
-  SESSION_LIST_LIMIT_MAX,
+  LIMIT_ALL,
   SPEC_STATUSES,
   TASK_STATUSES,
   type Ask,
@@ -196,7 +195,7 @@ export default function Dashboard() {
   const loadAsks = useCallback(
     async (project: string) => {
       try {
-        const data = await api.listAsks(project, ASK_LIMIT_MAX);
+        const data = await api.listAsks(project, LIMIT_ALL);
         setAsks(data);
         setAsksProject(project);
       } catch (e) {
@@ -218,7 +217,7 @@ export default function Dashboard() {
   const loadSessions = useCallback(
     async (project: string) => {
       try {
-        const data = await api.listSessions(project, SESSION_LIST_LIMIT_MAX);
+        const data = await api.listSessions(project, LIMIT_ALL);
         setSessions(data);
         setSessionsProject(project);
       } catch (e) {
@@ -549,7 +548,6 @@ export default function Dashboard() {
                 sessions={
                   sessionsProject === activeProject.name ? sessions : null
                 }
-                total={activeProject.sessions_count}
                 onOpen={(sessionId) =>
                   navigate({
                     kind: 'session',
@@ -570,7 +568,6 @@ export default function Dashboard() {
             asks={
               <AsksView
                 asks={asksProject === activeProject.name ? asks : null}
-                total={activeProject.asks_count}
                 onEdit={(ask) => {
                   setEditError(null);
                   setEdit({ kind: 'ask', ask });
