@@ -15,6 +15,7 @@ interface Props {
 
 // 渲染策略: 信息分层, 而非平铺原始事件。
 // - 按 turn 分组: UserPromptSubmit 开新轮, prompt(蓝) 与 assistant 回复(绿) 是重点, 大块展示
+// - MessageDisplay (assistant 中间进度文本) 按 message_id 合并成淡色块; 与 Stop 最终回复重复的丢弃
 // - Pre/PostToolUse 按 tool_use_id 配对合并成一行: 工具名 + 关键参数 + 时长 + 成败
 // - 错误 (PostToolUseFailure/PermissionDenied/StopFailure) 红色常显, 不折叠
 // - 顶部概览条: 状态 / model / 时长 / 轮次 / 工具数 / 错误数, 一眼知进度
@@ -155,7 +156,30 @@ interface EventItem {
   ev: PE;
 }
 
-type Item = ToolItem | EventItem;
+// MessageDisplay 流式分片按 message_id 合并成一个进度块
+interface MsgItem {
+  kind: 'msg';
+  key: string;
+  at: number;
+  messageId: string | null;
+  chunks: { index: number | null; delta: string; pe: PE }[];
+  final: boolean;
+}
+
+type Item = ToolItem | EventItem | MsgItem;
+
+// 分片按 index 排序拼全文 (hook 异步执行, 到达顺序可能乱序)
+function msgText(item: MsgItem): string {
+  return [...item.chunks]
+    .sort((a, b) => (a.index ?? Number.MAX_SAFE_INTEGER) - (b.index ?? Number.MAX_SAFE_INTEGER))
+    .map((c) => c.delta)
+    .join('');
+}
+
+// CLI 截断标记会插在文本尾部; 去重比较时剥掉再取前缀
+function normForCompare(s: string): string {
+  return s.replace(/…\[truncated, \d+ chars total\]/g, '').trim().slice(0, 300);
+}
 
 interface Turn {
   prompt: PE | null; // UserPromptSubmit; null = 首个 prompt 前的开场事件
@@ -192,6 +216,45 @@ function buildTimeline(events: PE[]): { turns: Turn[]; toolCount: number; errorC
       const tuid = str(pe.data?.tool_use_id);
       if (tuid) pending.set(tuid, item);
       current.items.push(item);
+      continue;
+    }
+    if (e === 'MessageDisplay') {
+      const mid = str(pe.data?.message_id);
+      const deltaRaw = pe.data?.delta;
+      const delta = typeof deltaRaw === 'string' ? deltaRaw : '';
+      const idxRaw = pe.data?.index;
+      const idx = typeof idxRaw === 'number' ? idxRaw : null;
+      const isFinal = pe.data?.final === true;
+      const last = current.items[current.items.length - 1];
+      if (last && last.kind === 'msg' && mid !== null && last.messageId === mid) {
+        last.chunks.push({ index: idx, delta, pe });
+        last.final = last.final || isFinal;
+      } else {
+        current.items.push({
+          kind: 'msg',
+          key: pe.status.id,
+          at: pe.status.created_at,
+          messageId: mid,
+          chunks: [{ index: idx, delta, pe }],
+          final: isFinal,
+        });
+      }
+      continue;
+    }
+    if (e === 'Stop') {
+      // 末条进度块 = 最终回复本身 (Stop 绿块已展示) → 去重丢弃
+      const finalText = str(pe.data?.last_assistant_message);
+      for (let i = current.items.length - 1; i >= 0; i--) {
+        const it = current.items[i];
+        if (it.kind !== 'msg') continue;
+        if (finalText !== null) {
+          const a = normForCompare(msgText(it));
+          const b = normForCompare(finalText);
+          if (a.length > 0 && (a.startsWith(b) || b.startsWith(a))) current.items.splice(i, 1);
+        }
+        break;
+      }
+      current.items.push({ kind: 'event', key: pe.status.id, at: pe.status.created_at, ev: pe });
       continue;
     }
     if (e === 'PostToolUse' || e === 'PostToolUseFailure' || e === 'PermissionDenied') {
@@ -268,8 +331,27 @@ function digest(event: string, data: Json | null): string | null {
       return str(data.last_assistant_message);
     case 'StopFailure':
       return str(data.error) ?? str(data.reason) ?? str(data.message);
+    case 'UserPromptExpansion':
+      return str(data.command) ?? str(data.prompt);
+    case 'CwdChanged':
+      return str(data.new_cwd) ?? str(data.cwd);
+    case 'WorktreeCreate':
+    case 'WorktreeRemove':
+      return str(data.worktree_path) ?? str(data.path);
+    case 'TaskCreated':
+    case 'TaskCompleted':
+      return str(data.title) ?? str(data.description) ?? str(data.task_id);
     default:
-      return null;
+      // 新增/未知事件的通用兜底: 常见字段里挑一个可读的, 取不到再回退 raw JSON
+      return (
+        str(data.message) ??
+        str(data.title) ??
+        str(data.file_path) ??
+        str(data.path) ??
+        str(data.command) ??
+        str(data.reason) ??
+        null
+      );
   }
 }
 
@@ -327,8 +409,18 @@ const TURN_COLLAPSE_THRESHOLD = 20;
 // 折叠态下仍必须可见的重要事件
 function isKeyEvent(item: Item): boolean {
   if (item.kind === 'tool') return item.failed;
+  if (item.kind === 'msg') return false;
   const e = item.ev.status.event;
   return e === 'Stop' || e === 'StopFailure' || e === 'PermissionDenied';
+}
+
+// 活跃指示文案: 由最后一个 item 推断当前阶段 (thinking 无 hook 事件, 只能推断)
+function liveLabel(items: Item[]): string {
+  const last = items[items.length - 1];
+  if (!last) return 'thinking…';
+  if (last.kind === 'msg') return last.final ? 'thinking…' : 'writing…';
+  if (last.kind === 'tool') return last.post === null ? 'working…' : 'thinking…';
+  return 'working…';
 }
 
 function TurnBlock({
@@ -376,6 +468,8 @@ function TurnBlock({
           {shown.map((item) =>
             item.kind === 'tool' ? (
               <ToolRow key={item.key} item={item} live={live && isLast} />
+            ) : item.kind === 'msg' ? (
+              <MsgBlock key={item.key} item={item} />
             ) : (
               <EventBlock key={item.key} pe={item.ev} />
             ),
@@ -388,7 +482,7 @@ function TurnBlock({
             ) && (
               <div className="flex items-center gap-2 py-1 text-[11px] font-mono text-green-400/80">
                 <span className="w-1.5 h-1.5 rounded-full bg-green-400 animate-pulse" />
-                working…
+                {liveLabel(turn.items)}
               </div>
             )}
         </div>
@@ -527,12 +621,22 @@ function badgeClass(event: string): string {
       return 'bg-green-950/60 text-green-300 border-green-900';
     case 'Notification':
     case 'PermissionRequest':
+    case 'Elicitation':
+    case 'TeammateIdle':
       return 'bg-amber-950/60 text-amber-300 border-amber-900';
     case 'SessionStart':
     case 'SessionEnd':
       return 'bg-zinc-900 text-zinc-500 border-zinc-800';
     case 'SubagentStart':
+    case 'WorktreeCreate':
+    case 'WorktreeRemove':
       return 'bg-cyan-950/60 text-cyan-300 border-cyan-900';
+    case 'TaskCreated':
+      return 'bg-violet-950/60 text-violet-300 border-violet-900';
+    case 'TaskCompleted':
+      return 'bg-green-950/60 text-green-300 border-green-900';
+    case 'UserPromptExpansion':
+      return 'bg-blue-950/60 text-blue-300 border-blue-900';
     case 'PreCompact':
     case 'PostCompact':
       return 'bg-orange-950/60 text-orange-300 border-orange-900';
@@ -580,16 +684,43 @@ function MinorEventRow({ pe }: { pe: PE }) {
   );
 }
 
-// 重点内容块 (prompt / assistant 回复): 默认 clamp, 点击展开全文, raw 按钮看原始 JSON
+// assistant 中间进度文本 (MessageDisplay 分片合并): 淡色块, 与最终回复(绿)区分
+function MsgBlock({ item }: { item: MsgItem }) {
+  const text = msgText(item);
+  return (
+    <ExpandableBlock
+      rawText={JSON.stringify(
+        item.chunks.map((c) => c.pe.data ?? c.pe.status.body),
+        null,
+        2,
+      )}
+      text={text.length > 0 ? text : null}
+      clampClass="line-clamp-6"
+      className="border-l-2 border-zinc-700 bg-zinc-900/40 rounded-r-md my-1"
+      header={
+        <>
+          <span className="text-zinc-400 font-semibold">assistant · progress</span>
+          <span className="text-zinc-600">{clock(item.at)}</span>
+          {!item.final && <span className="text-zinc-500">streaming…</span>}
+        </>
+      }
+      textClass="text-zinc-400"
+    />
+  );
+}
+
+// 重点内容块 (prompt / assistant 回复 / 进度): 默认 clamp, 点击展开全文, raw 按钮看原始 JSON
 function ExpandableBlock({
   pe,
+  rawText,
   text,
   clampClass,
   className,
   header,
   textClass,
 }: {
-  pe: PE;
+  pe?: PE;
+  rawText?: string;
   text: string | null;
   clampClass: string;
   className: string;
@@ -640,7 +771,7 @@ function ExpandableBlock({
       )}
       {(raw || text === null) && (
         <pre className="mt-1.5 text-[11px] leading-relaxed text-zinc-400 bg-zinc-900/60 rounded p-2 overflow-x-auto max-h-96 overflow-y-auto whitespace-pre-wrap break-all">
-          {prettyJson(pe)}
+          {rawText ?? (pe ? prettyJson(pe) : '')}
         </pre>
       )}
     </div>

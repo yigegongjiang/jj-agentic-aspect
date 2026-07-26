@@ -9,6 +9,22 @@
 
 > 历史 27 版 (≤ 0.8.23) 在双文件分界确立前写成, 原文照搬未回填; 用户向 / 开发向严格分界自 **0.8.24** 起执行.
 
+## [0.21.0] - 2026-07-26
+
+### Added
+
+- session 时间线新增 assistant 中间进度文本: 终端里那段淡色的过程说明现按消息合并成淡色块展示, 与最终回复重复的自动去重 (Claude Code 需接入 MessageDisplay 事件, 配置样例见 `hook --help`)。
+  - MessageDisplay payload 实测 (Claude Code 2.1.220): `{message_id, turn_id, prompt_id, index, final, delta}`; delta = 增量文本分片。
+  - `web/components/SessionDetail.tsx`: buildTimeline 新增 msg item — 相邻分片按 `message_id` 合并, 渲染时按 `index` 排序拼接 (hook 异步, 到达可乱序); Stop 时末条进度块与 `last_assistant_message` 前缀比对 (`normForCompare` 剥离 CLI 截断标记) 命中即丢弃; 新增 MsgBlock 淡色块 (zinc); ExpandableBlock 增 `rawText` 可选参数承载多分片 raw。
+- hook 采集扩展到 Claude Code 全部 30 个事件 (含任务 / 团队 / 工作区 / 配置与文件变更等); Codex 支持的 11 个事件经核对已全量接入, 无缺口。
+  - 本机 `~/.claude/settings.json`: 15 → 30 事件全量指向 `jj-agentic-aspect hook --source claude-code`; CLI/worker 事件名本就透传, 行为零变更。
+  - `cli/src/hook.rs`: HELP 内 Claude Code 配置样例更新为 30 事件全集 + MessageDisplay payload 注记; 代码零变更。
+  - `web/components/SessionDetail.tsx`: digest 增 UserPromptExpansion/CwdChanged/Worktree*/Task* case + 未知事件通用兜底字段 (message/title/file_path/path/command/reason); badgeClass 增 Task*/Worktree*/Elicitation/TeammateIdle/UserPromptExpansion 色组。
+- session 活跃指示细化: 依据最近事件区分 writing… (正在输出) / thinking… (正在思考) / working… (工具执行中)。
+  - `web/components/SessionDetail.tsx`: liveLabel — 末 item 为 msg 且非 final → writing…, msg final / tool 已配对 → thinking…, tool 未配对 → working…。
+- 已确认不可采集项 (上游无 hook 事件, 非本工具缺失): 回合中途插入的用户消息、thinking 思考内容。
+  - 实测依据: mid-turn 消息不触发 UserPromptSubmit (`--input-format stream-json` 注入 + 真实 session 双重验证); thinking 仅存于 transcript JSONL (官方声明内部格式, 不解析); Codex 0.145.0 二进制 hook 枚举 = 11 事件, 无 assistant 文本类事件。
+
 ## [0.20.0] - 2026-07-26
 
 ### Changed
