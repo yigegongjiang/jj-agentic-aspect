@@ -9,6 +9,21 @@
 
 > 历史 27 版 (≤ 0.8.23) 在双文件分界确立前写成, 原文照搬未回填; 用户向 / 开发向严格分界自 **0.8.24** 起执行.
 
+## [0.16.0] - 2026-07-26
+
+### Added
+
+- 新增 `jj-status` CLI: 挂进 Claude Code hooks (`~/.claude/settings.json` 指向 `jj-status hook`, 样例见 `jj-status --help`) 后自动记录每个 session 的运行事件 (提示词 / 工具调用 / 停止等); 上报静默且永不干扰宿主 session, 随安装脚本一并安装。
+  - `worker/migrations/0005_add_statuses.sql`: `statuses` 表 (id ULID / project_id FK CASCADE / session_id / event / body=原始 hook JSON / created_at, 无 updated_at=追加只读) + 复合索引 `(project_id, session_id)`。
+  - `worker/src/index.ts`: `POST /projects/:name/statuses` (project upsert + bump); `GET /projects/:name/sessions` (GROUP BY 摘要 + `json_extract` 取首条 `UserPromptSubmit` prompt 预览, `json_valid` 兜底); `GET /projects/:name/sessions/:sid/statuses` (ULID 序, 上限 5000); `DELETE /projects/:name/sessions/:sid`; project rename/merge 两分支迁移 `statuses.project_id`; `GET /projects` 增 `sessions_count` (COUNT DISTINCT session_id)。
+  - `cli/src/bin/jj-status.rs`: `hook` 子命令 stdin 读事件 JSON, project=JSON `cwd` basename (回退 `$CLAUDE_PROJECT_DIR`/进程 cwd), 递归截断超长字符串 (2048→256 两档) + 数组截前 100 项 + 骨架兜底, 保证 body ≤ 上限; 任何失败静默 exit 0, 上报限时 10s; 查询 `sessions`/`ls`/`rm`。
+  - `cli/src/lib.rs`: `load_config`/`api` 拆出可失败的 `try_load_config`/`try_api(timeout)` 供 hook 静默路径复用; `jj-plan` 对 `status` noun 重定向提示 (同 `ask`)。
+  - `scripts/install.sh` + `scripts/install-local.sh` `BINARIES` + `.github/workflows/release.yml` 编译/产物/checksums 增 `jj-status`。
+- dashboard 项目页新增 SESSIONS tab: session 列表 (首条提示词 / 时长 / 事件数) + 单 session 事件时间线; 每条事件提炼重点直接展示, 原始 JSON 可展开, 短内容自动全渲染; 支持删除整个 session。
+  - `web/lib/types.ts` (`SessionSummary`/`Status`/`sessions_count`) + `web/lib/api.ts` (`listSessions`/`listSessionStatuses`/`deleteSession`) + `web/lib/format.ts` (`fmtDuration`)。
+  - 新增 `web/components/SessionsView.tsx` (卡片列表) + `SessionDetail.tsx` (时间线: 按事件类型提 digest — prompt/tool_name/command/file_path 等, badge 分色, raw JSON 折叠, body ≤ 400 字符且无 digest 时自动展开; 自带 5s 可见页轮询)。
+  - `web/components/Dashboard.tsx`: 新路由 `?p=<project>&sess=<session_id>` + sessions 状态镜像 asks 模式 + 删除确认; `ProjectTabs.tsx` 第三 tab; `ProjectsList.tsx` 计数行增 sessions。
+
 ## [0.15.0] - 2026-07-23
 
 ### Changed

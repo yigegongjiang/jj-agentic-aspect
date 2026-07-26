@@ -62,8 +62,35 @@ interface AskRow {
   updated_at: number;
 }
 
+interface StatusRow {
+  id: string;
+  project_id: string;
+  session_id: string;
+  event: string;
+  body: string;
+  created_at: number;
+}
+
+interface SessionSummary {
+  session_id: string;
+  events_count: number;
+  first_at: number;
+  last_at: number;
+  first_prompt: string | null;
+}
+
 const ASK_LIMIT_DEFAULT = 3;
 const ASK_LIMIT_MAX = 100;
+
+const MAX_SESSION_ID_LEN = 128;
+const MAX_EVENT_LEN = 64;
+const SESSION_LIST_LIMIT_DEFAULT = 50;
+const SESSION_LIST_LIMIT_MAX = 200;
+// Hard cap on events returned for one session. Client-side truncation keeps
+// individual bodies small; this bounds the worst-case payload.
+const SESSION_EVENTS_LIMIT = 5000;
+// Session-card preview length (chars) for the first user prompt.
+const SESSION_PROMPT_PREVIEW_LEN = 300;
 
 // Cross-project ask search: separate, more generous bounds than the per-project
 // list above. A keyword search wants to surface many matches at once; the cap
@@ -331,12 +358,16 @@ app.get('/projects', async (c) => {
     { results: specRows },
     { results: taskRows },
     { results: askCountRows },
+    { results: sessionCountRows },
   ] = await Promise.all([
     c.env.DB.prepare('SELECT * FROM projects ORDER BY updated_at DESC').all<ProjectRow>(),
     c.env.DB.prepare('SELECT * FROM specs').all<SpecRow>(),
     c.env.DB.prepare('SELECT * FROM tasks').all<TaskRow>(),
     c.env.DB
       .prepare('SELECT project_id, COUNT(*) AS n FROM asks GROUP BY project_id')
+      .all<{ project_id: string; n: number }>(),
+    c.env.DB
+      .prepare('SELECT project_id, COUNT(DISTINCT session_id) AS n FROM statuses GROUP BY project_id')
       .all<{ project_id: string; n: number }>(),
   ]);
 
@@ -350,12 +381,16 @@ app.get('/projects', async (c) => {
   const askCountByProject = new Map<string, number>();
   for (const r of askCountRows) askCountByProject.set(r.project_id, r.n);
 
+  const sessionCountByProject = new Map<string, number>();
+  for (const r of sessionCountRows) sessionCountByProject.set(r.project_id, r.n);
+
   const tasksBySpec = indexTasks(taskRows);
   return c.json(
     projectRows.map((p) => ({
       ...p,
       specs: bundleSpecs(specsByProject.get(p.name) ?? [], tasksBySpec),
       asks_count: askCountByProject.get(p.name) ?? 0,
+      sessions_count: sessionCountByProject.get(p.name) ?? 0,
     })),
   );
 });
@@ -457,23 +492,22 @@ app.delete('/projects/:name', async (c) => {
 // Rename a project, or merge it into an existing target.
 //
 // The project's "id" is its name (primary key), so renaming means migrating
-// every child row that references it. specs.project_id and asks.project_id
-// both point at projects.name with ON DELETE CASCADE — but we must move the
-// children BEFORE deleting the old row, otherwise the cascade wipes them.
+// every child row that references it. specs.project_id, asks.project_id and
+// statuses.project_id all point at projects.name with ON DELETE CASCADE — but
+// we must move the children BEFORE deleting the old row, otherwise the cascade
+// wipes them.
 //
 // Two paths depending on whether the target name already exists:
 //
 //   rename (target absent):
 //     1. INSERT new project row, inheriting old's created_at; updated_at = ts
-//     2. UPDATE specs.project_id = new WHERE project_id = old
-//     3. UPDATE asks.project_id  = new WHERE project_id = old
-//     4. DELETE old project row
+//     2. UPDATE specs/asks/statuses.project_id = new WHERE project_id = old
+//     3. DELETE old project row
 //
 //   merge (target present):
-//     1. UPDATE specs.project_id = target WHERE project_id = old
-//     2. UPDATE asks.project_id  = target WHERE project_id = old
-//     3. UPDATE projects SET updated_at = ts WHERE name = target
-//     4. DELETE old project row
+//     1. UPDATE specs/asks/statuses.project_id = target WHERE project_id = old
+//     2. UPDATE projects SET updated_at = ts WHERE name = target
+//     3. DELETE old project row
 //
 // Merge safety relies on three schema facts:
 //   - specs.id / asks.id are ULIDs (globally unique) — no PK clash when child
@@ -517,6 +551,9 @@ app.patch('/projects/:name', async (c) => {
         .prepare('UPDATE asks SET project_id = ? WHERE project_id = ?')
         .bind(newName, oldName),
       c.env.DB
+        .prepare('UPDATE statuses SET project_id = ? WHERE project_id = ?')
+        .bind(newName, oldName),
+      c.env.DB
         .prepare('UPDATE projects SET updated_at = ? WHERE name = ?')
         .bind(ts, newName),
       c.env.DB.prepare('DELETE FROM projects WHERE name = ?').bind(oldName),
@@ -533,6 +570,9 @@ app.patch('/projects/:name', async (c) => {
         .bind(newName, oldName),
       c.env.DB
         .prepare('UPDATE asks SET project_id = ? WHERE project_id = ?')
+        .bind(newName, oldName),
+      c.env.DB
+        .prepare('UPDATE statuses SET project_id = ? WHERE project_id = ?')
         .bind(newName, oldName),
       c.env.DB.prepare('DELETE FROM projects WHERE name = ?').bind(oldName),
     ]);
@@ -1008,6 +1048,143 @@ app.delete('/asks/:id', async (c) => {
     c.env.DB.prepare('DELETE FROM asks WHERE id = ?').bind(id),
     bumpProject(c.env.DB, ask.project_id, t),
   ]);
+  return c.body(null, 204);
+});
+
+// ---------- statuses (Claude Code hook session events) ----------
+// Append-only event log, grouped by session_id within a project. Ingested by
+// `jj-status hook`; browsed as sessions (summary) → one session's timeline.
+// No PATCH: events are immutable records of what happened.
+
+function parseStatusPayload(raw: {
+  session_id?: unknown;
+  event?: unknown;
+  body?: unknown;
+}): { ok: true; value: { session_id: string; event: string; body: string } } | { ok: false; error: string } {
+  if (
+    typeof raw.session_id !== 'string' ||
+    raw.session_id.length === 0 ||
+    raw.session_id.length > MAX_SESSION_ID_LEN
+  ) {
+    return { ok: false, error: `session_id must be string of 1..${MAX_SESSION_ID_LEN} chars` };
+  }
+  if (typeof raw.event !== 'string' || raw.event.length === 0 || raw.event.length > MAX_EVENT_LEN) {
+    return { ok: false, error: `event must be string of 1..${MAX_EVENT_LEN} chars` };
+  }
+  if (typeof raw.body !== 'string' || raw.body.length === 0 || raw.body.length > MAX_BODY_LEN) {
+    return { ok: false, error: `body must be string of 1..${MAX_BODY_LEN} chars` };
+  }
+  return { ok: true, value: { session_id: raw.session_id, event: raw.event, body: raw.body } };
+}
+
+app.post('/projects/:name/statuses', async (c) => {
+  const name = c.req.param('name');
+  if (name.length === 0 || name.length > MAX_PROJECT_NAME_LEN) {
+    return c.json({ error: `project name length must be 1..${MAX_PROJECT_NAME_LEN}` }, 400);
+  }
+
+  const parsedBody = await parseJsonBody<{ session_id?: unknown; event?: unknown; body?: unknown }>(c);
+  if (!parsedBody.ok) return parsedBody.response;
+  const parsed = parseStatusPayload(parsedBody.value);
+  if (!parsed.ok) return c.json({ error: parsed.error }, 400);
+
+  const id = ulid();
+  const t = now();
+  await c.env.DB.batch([
+    c.env.DB
+      .prepare('INSERT OR IGNORE INTO projects (name, created_at, updated_at) VALUES (?, ?, ?)')
+      .bind(name, t, t),
+    c.env.DB
+      .prepare(
+        'INSERT INTO statuses (id, project_id, session_id, event, body, created_at) VALUES (?, ?, ?, ?, ?, ?)',
+      )
+      .bind(id, name, parsed.value.session_id, parsed.value.event, parsed.value.body, t),
+    bumpProject(c.env.DB, name, t),
+  ]);
+  return c.json(
+    {
+      id,
+      project_id: name,
+      session_id: parsed.value.session_id,
+      event: parsed.value.event,
+      body: parsed.value.body,
+      created_at: t,
+    },
+    201,
+  );
+});
+
+// Session summaries, most-recently-active first. first_prompt is a preview of
+// the session's first UserPromptSubmit prompt (what the human asked), pulled
+// via json_extract with a json_valid guard — a client-side-truncated body is
+// still valid JSON, but never let a malformed row break the whole listing.
+// Field name: newer Claude Code sends `user_input`, older sends `prompt`;
+// COALESCE covers both.
+app.get('/projects/:name/sessions', async (c) => {
+  const name = c.req.param('name');
+  const project = await readProject(c.env.DB, name);
+  if (!project) return c.json({ error: 'project not found' }, 404);
+
+  const rawLimit = c.req.query('limit');
+  let limit = SESSION_LIST_LIMIT_DEFAULT;
+  if (rawLimit !== undefined) {
+    const n = Number(rawLimit);
+    if (!Number.isInteger(n) || n < 1 || n > SESSION_LIST_LIMIT_MAX) {
+      return c.json({ error: `limit must be integer in 1..${SESSION_LIST_LIMIT_MAX}` }, 400);
+    }
+    limit = n;
+  }
+
+  const { results } = await c.env.DB
+    .prepare(
+      `SELECT s.session_id,
+              COUNT(*) AS events_count,
+              MIN(s.created_at) AS first_at,
+              MAX(s.created_at) AS last_at,
+              (SELECT substr(CASE WHEN json_valid(s2.body)
+                             THEN COALESCE(json_extract(s2.body, '$.prompt'), json_extract(s2.body, '$.user_input'))
+                             END, 1, ?)
+                 FROM statuses s2
+                WHERE s2.project_id = s.project_id
+                  AND s2.session_id = s.session_id
+                  AND s2.event = 'UserPromptSubmit'
+                ORDER BY s2.id
+                LIMIT 1) AS first_prompt
+         FROM statuses s
+        WHERE s.project_id = ?
+        GROUP BY s.session_id
+        ORDER BY last_at DESC
+        LIMIT ?`,
+    )
+    .bind(SESSION_PROMPT_PREVIEW_LEN, name, limit)
+    .all<SessionSummary>();
+  return c.json(results);
+});
+
+// One session's full timeline, oldest first (ULID id order == insert order).
+app.get('/projects/:name/sessions/:sid/statuses', async (c) => {
+  const name = c.req.param('name');
+  const sid = c.req.param('sid');
+  const { results } = await c.env.DB
+    .prepare(
+      'SELECT id, project_id, session_id, event, body, created_at FROM statuses WHERE project_id = ? AND session_id = ? ORDER BY id LIMIT ?',
+    )
+    .bind(name, sid, SESSION_EVENTS_LIMIT)
+    .all<StatusRow>();
+  if (results.length === 0) return c.json({ error: 'session not found' }, 404);
+  return c.json(results);
+});
+
+app.delete('/projects/:name/sessions/:sid', async (c) => {
+  const name = c.req.param('name');
+  const sid = c.req.param('sid');
+  const t = now();
+  const result = await c.env.DB
+    .prepare('DELETE FROM statuses WHERE project_id = ? AND session_id = ?')
+    .bind(name, sid)
+    .run();
+  if (result.meta.changes === 0) return c.json({ error: 'session not found' }, 404);
+  await bumpProject(c.env.DB, name, t).run();
   return c.body(null, 204);
 });
 

@@ -36,7 +36,8 @@ export default function ProjectsList({ projects, onOpen, onRename, onDelete }: P
             <div className="text-xs text-zinc-500">
               {p.specs.length} {p.specs.length === 1 ? 'plan' : 'plans'} ·{' '}
               {taskCount} {taskCount === 1 ? 'task' : 'tasks'} ·{' '}
-              {askCount} {askCount === 1 ? 'ask' : 'asks'}
+              {askCount} {askCount === 1 ? 'ask' : 'asks'} ·{' '}
+              {p.sessions_count} {p.sessions_count === 1 ? 'session' : 'sessions'}
             </div>
             <div className="mt-1 flex items-center justify-between gap-2">
               <span className="text-[11px] text-zinc-400 font-mono truncate">

@@ -1,8 +1,10 @@
 import type {
   Ask,
   Project,
+  SessionSummary,
   Spec,
   SpecStatus,
+  Status,
   Task,
   TaskStatus,
 } from './types';
@@ -114,4 +116,25 @@ export const api = {
 
   deleteAsk: (id: string) =>
     request<null>('DELETE', `/asks/${encodeURIComponent(id)}`),
+
+  // Claude Code hook session events (ingested by jj-status).
+  listSessions: (project: string, limit?: number) => {
+    const q = limit !== undefined ? `?limit=${limit}` : '';
+    return request<SessionSummary[]>(
+      'GET',
+      `/projects/${encodeURIComponent(project)}/sessions${q}`,
+    );
+  },
+
+  listSessionStatuses: (project: string, sessionId: string) =>
+    request<Status[]>(
+      'GET',
+      `/projects/${encodeURIComponent(project)}/sessions/${encodeURIComponent(sessionId)}/statuses`,
+    ),
+
+  deleteSession: (project: string, sessionId: string) =>
+    request<null>(
+      'DELETE',
+      `/projects/${encodeURIComponent(project)}/sessions/${encodeURIComponent(sessionId)}`,
+    ),
 };

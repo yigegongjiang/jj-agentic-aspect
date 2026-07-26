@@ -240,6 +240,12 @@ fn main() {
             verb.unwrap_or("--help")
         ));
     }
+    if noun == "status" {
+        fail(&format!(
+            "'status' is a jj-status command; run 'jj-status {}' instead",
+            verb.unwrap_or("--help")
+        ));
+    }
     run(noun, verb, rest);
 }
 

@@ -79,7 +79,7 @@ jobs:
       - name: Add Rust targets
         run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
 
-      - name: Compile macOS binaries (jj-plan + jj-ask × arm64 + x64)
+      - name: Compile macOS binaries (jj-plan + jj-ask + jj-status × arm64 + x64)
         working-directory: cli
         run: cargo build --release --target aarch64-apple-darwin --target x86_64-apple-darwin
 
@@ -91,7 +91,7 @@ jobs:
           mkdir -p dist
           for pair in "aarch64-apple-darwin:arm64" "x86_64-apple-darwin:x64"; do
             triple="${pair%%:*}"; arch="${pair##*:}"
-            for bin in jj-plan jj-ask; do
+            for bin in jj-plan jj-ask jj-status; do
               cp "target/$triple/release/$bin" "dist/$bin-macos-$arch"
             done
           done
@@ -101,7 +101,7 @@ jobs:
         working-directory: cli/dist
         run: |
           shopt -s nullglob
-          files=( jj-plan-macos-* jj-ask-macos-* )
+          files=( jj-plan-macos-* jj-ask-macos-* jj-status-macos-* )
           [ ${#files[@]} -gt 0 ] || { echo "no build artifacts found in cli/dist" >&2; exit 1; }
           shasum -a 256 "${files[@]}" > checksums.txt
           cat checksums.txt
@@ -114,4 +114,5 @@ jobs:
           files: |
             cli/dist/jj-plan-macos-*
             cli/dist/jj-ask-macos-*
+            cli/dist/jj-status-macos-*
             cli/dist/checksums.txt

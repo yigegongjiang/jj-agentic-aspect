@@ -11,7 +11,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 INSTALL_DIR="${INSTALL_DIR:-$HOME/.local/bin}"
-BINARIES=(jj-plan jj-ask)
+BINARIES=(jj-plan jj-ask jj-status)
 
 err()  { printf 'install-local.sh: %s\n' "$*" >&2; exit 1; }
 info() { printf '%s\n' "$*"; }

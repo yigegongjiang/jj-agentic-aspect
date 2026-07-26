@@ -5,10 +5,12 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { ApiError, api } from '@/lib/api';
 import {
   ASK_LIMIT_MAX,
+  SESSION_LIST_LIMIT_MAX,
   SPEC_STATUSES,
   TASK_STATUSES,
   type Ask,
   type Project,
+  type SessionSummary,
   type Spec,
   type SpecStatus,
   type Task,
@@ -21,6 +23,8 @@ import ConfirmDialog from './ConfirmDialog';
 import EditDialog, { type EditDraft } from './EditDialog';
 import ProjectsList from './ProjectsList';
 import RenameProjectDialog from './RenameProjectDialog';
+import SessionDetail from './SessionDetail';
+import SessionsView from './SessionsView';
 import SpecDetail from './SpecDetail';
 import ProjectTabs from './ProjectTabs';
 import SpecsView from './SpecsView';
@@ -34,7 +38,8 @@ type DeleteTarget =
   | { kind: 'project'; name: string; specCount: number; taskCount: number }
   | { kind: 'spec'; id: string; title: string; taskCount: number }
   | { kind: 'task'; id: string; title: string }
-  | { kind: 'ask'; id: string };
+  | { kind: 'ask'; id: string }
+  | { kind: 'session'; project: string; sessionId: string; eventsCount: number };
 
 interface RouteHome {
   kind: 'home';
@@ -48,13 +53,20 @@ interface RouteSpec {
   project: string;
   specId: string;
 }
-type Route = RouteHome | RouteProject | RouteSpec;
+interface RouteSession {
+  kind: 'session';
+  project: string;
+  sessionId: string;
+}
+type Route = RouteHome | RouteProject | RouteSpec | RouteSession;
 
 function readRoute(): Route {
   if (typeof window === 'undefined') return { kind: 'home' };
   const params = new URLSearchParams(window.location.search);
   const p = params.get('p');
   const s = params.get('s');
+  const sess = params.get('sess');
+  if (p && sess) return { kind: 'session', project: p, sessionId: sess };
   if (p && s) return { kind: 'spec', project: p, specId: s };
   if (p) return { kind: 'project', project: p };
   return { kind: 'home' };
@@ -65,6 +77,7 @@ function routeToUrl(route: Route): string {
   const params = new URLSearchParams();
   params.set('p', route.project);
   if (route.kind === 'spec') params.set('s', route.specId);
+  if (route.kind === 'session') params.set('sess', route.sessionId);
   return `./?${params.toString()}`;
 }
 
@@ -83,6 +96,9 @@ export default function Dashboard() {
   // Asks lazy-loaded per active project; reset on navigation to avoid stale flashes.
   const [asks, setAsks] = useState<Ask[] | null>(null);
   const [asksProject, setAsksProject] = useState<string | null>(null);
+  // Sessions mirror the asks pattern.
+  const [sessions, setSessions] = useState<SessionSummary[] | null>(null);
+  const [sessionsProject, setSessionsProject] = useState<string | null>(null);
 
   // Hydrate the route from the URL once on mount. Auth is enforced at the edge
   // by Cloudflare Access (Google SSO); the browser carries the Access session
@@ -140,6 +156,8 @@ export default function Dashboard() {
     setRenameError(null);
     setAsks(null);
     setAsksProject(null);
+    setSessions(null);
+    setSessionsProject(null);
   }, []);
 
   // silent=true: background auto-refresh path. Skip the loading/error UI so a
@@ -196,12 +214,36 @@ export default function Dashboard() {
     [onUnauthorized],
   );
 
+  // Silent fetch; same error policy as loadAsks.
+  const loadSessions = useCallback(
+    async (project: string) => {
+      try {
+        const data = await api.listSessions(project, SESSION_LIST_LIMIT_MAX);
+        setSessions(data);
+        setSessionsProject(project);
+      } catch (e) {
+        const err = e as ApiError;
+        if (err.status === 401) {
+          onUnauthorized();
+        } else if (err.status === 404) {
+          setSessions([]);
+          setSessionsProject(project);
+        } else {
+          console.warn('[sessions-load]', err);
+        }
+      }
+    },
+    [onUnauthorized],
+  );
+
   // asksProject gate prevents refetch when bouncing project ↔ spec routes.
   useEffect(() => {
     if (!hydrated) return;
     if (route.kind === 'home') {
       setAsks(null);
       setAsksProject(null);
+      setSessions(null);
+      setSessionsProject(null);
       return;
     }
     const project = route.project;
@@ -209,7 +251,11 @@ export default function Dashboard() {
       setAsks(null);
       void loadAsks(project);
     }
-  }, [hydrated, route, asksProject, loadAsks]);
+    if (sessionsProject !== project) {
+      setSessions(null);
+      void loadSessions(project);
+    }
+  }, [hydrated, route, asksProject, loadAsks, sessionsProject, loadSessions]);
 
   // Auto-refresh every 5s so AI-side CLI changes show up without a manual
   // reload. Skips ticks when the tab is hidden, then fires immediately on
@@ -223,6 +269,7 @@ export default function Dashboard() {
       void load(true);
       if (route.kind !== 'home') {
         void loadAsks(route.project);
+        void loadSessions(route.project);
       }
     };
     const intervalId = window.setInterval(tick, 5000);
@@ -231,7 +278,7 @@ export default function Dashboard() {
       window.clearInterval(intervalId);
       document.removeEventListener('visibilitychange', tick);
     };
-  }, [hydrated, load, route, loadAsks]);
+  }, [hydrated, load, route, loadAsks, loadSessions]);
 
   // 当前路由对应的 project / spec 对象;若数据中已不存在,后面的渲染逻辑回退上一级
   const activeProject = useMemo(() => {
@@ -252,7 +299,7 @@ export default function Dashboard() {
       navigate({ kind: 'home' });
     } else if (route.kind === 'spec' && activeProject && !activeSpec) {
       navigate({ kind: 'project', project: activeProject.name });
-    } else if (route.kind === 'spec' && !activeProject) {
+    } else if ((route.kind === 'spec' || route.kind === 'session') && !activeProject) {
       navigate({ kind: 'home' });
     }
   }, [projects, route, activeProject, activeSpec, navigate]);
@@ -345,10 +392,12 @@ export default function Dashboard() {
       // to splice the result in-place.
       await load(true);
       if (route.kind !== 'home' && route.project === oldName) {
-        if (route.kind === 'project') {
-          navigate({ kind: 'project', project: newName });
-        } else {
+        if (route.kind === 'spec') {
           navigate({ kind: 'spec', project: newName, specId: route.specId });
+        } else if (route.kind === 'session') {
+          navigate({ kind: 'session', project: newName, sessionId: route.sessionId });
+        } else {
+          navigate({ kind: 'project', project: newName });
         }
       }
       setRename(null);
@@ -400,10 +449,19 @@ export default function Dashboard() {
                 })),
               })),
         );
-      } else {
+      } else if (del.kind === 'ask') {
         const id = del.id;
         await api.deleteAsk(id);
         setAsks((prev) => (prev === null ? prev : prev.filter((a) => a.id !== id)));
+      } else {
+        const { project, sessionId } = del;
+        await api.deleteSession(project, sessionId);
+        setSessions((prev) =>
+          prev === null ? prev : prev.filter((s) => s.session_id !== sessionId),
+        );
+        if (route.kind === 'session' && route.sessionId === sessionId) {
+          navigate({ kind: 'project', project });
+        }
       }
       setDel(null);
     } catch (e) {
@@ -487,6 +545,29 @@ export default function Dashboard() {
               (n, s) => n + s.tasks.length,
               0,
             )}
+            sessionCount={activeProject.sessions_count}
+            sessions={
+              <SessionsView
+                sessions={
+                  sessionsProject === activeProject.name ? sessions : null
+                }
+                onOpen={(sessionId) =>
+                  navigate({
+                    kind: 'session',
+                    project: activeProject.name,
+                    sessionId,
+                  })
+                }
+                onDelete={(s) =>
+                  setDel({
+                    kind: 'session',
+                    project: activeProject.name,
+                    sessionId: s.session_id,
+                    eventsCount: s.events_count,
+                  })
+                }
+              />
+            }
             asks={
               <AsksView
                 asks={asksProject === activeProject.name ? asks : null}
@@ -521,6 +602,12 @@ export default function Dashboard() {
                 }
               />
             }
+          />
+        ) : route.kind === 'session' && activeProject ? (
+          <SessionDetail
+            project={route.project}
+            sessionId={route.sessionId}
+            onUnauthorized={onUnauthorized}
           />
         ) : route.kind === 'spec' && activeSpec ? (
           <SpecDetail
@@ -622,14 +709,18 @@ export default function Dashboard() {
                 ? `删除 plan「${del.title}」?`
                 : del.kind === 'task'
                   ? `删除 task「${del.title}」?`
-                  : `删除 ask「${del.id}」?`
+                  : del.kind === 'ask'
+                    ? `删除 ask「${del.id}」?`
+                    : `删除 session「${del.sessionId.slice(0, 8)}」?`
           }
           message={
             del.kind === 'project'
-              ? `连同 ${del.specCount} 个 plan, ${del.taskCount} 个 task, 以及该项目下全部 ask 一并删除,无法恢复。`
+              ? `连同 ${del.specCount} 个 plan, ${del.taskCount} 个 task, 以及该项目下全部 ask 和 session 一并删除,无法恢复。`
               : del.kind === 'spec'
                 ? `连同 ${del.taskCount} 个 task 一并删除,无法恢复。`
-                : '此操作无法恢复。'
+                : del.kind === 'session'
+                  ? `连同 ${del.eventsCount} 条事件一并删除,无法恢复。`
+                  : '此操作无法恢复。'
           }
           confirmLabel="删除"
           danger
@@ -658,13 +749,16 @@ function Breadcrumb({ route, activeSpecTitle, onNavigate }: BreadcrumbProps) {
     segments.push({
       label: route.project,
       route:
-        route.kind === 'spec'
+        route.kind === 'spec' || route.kind === 'session'
           ? { kind: 'project', project: route.project }
           : null,
     });
   }
   if (route.kind === 'spec') {
     segments.push({ label: activeSpecTitle ?? '…', route: null });
+  }
+  if (route.kind === 'session') {
+    segments.push({ label: route.sessionId.slice(0, 8), route: null });
   }
 
   return (

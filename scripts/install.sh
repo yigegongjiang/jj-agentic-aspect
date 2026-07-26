@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# install.sh — install / update / uninstall jj-plan + jj-ask from GitHub Releases.
-# One action covers both binaries; per-binary mode is not supported.
+# install.sh — install / update / uninstall jj-plan + jj-ask + jj-status from GitHub Releases.
+# One action covers all binaries; per-binary mode is not supported.
 #
 # Usage:
 #   curl -fsSL https://raw.githubusercontent.com/yigegongjiang/jj-plan/main/scripts/install.sh | bash
@@ -13,7 +13,7 @@ set -euo pipefail
 REPO="${REPO:-yigegongjiang/jj-plan}"
 VERSION="${VERSION:-latest}"
 INSTALL_DIR="${INSTALL_DIR:-$HOME/.local/bin}"
-BINARIES=(jj-plan jj-ask)
+BINARIES=(jj-plan jj-ask jj-status)
 
 err()  { printf 'install.sh: %s\n' "$*" >&2; exit 1; }
 info() { printf '%s\n' "$*"; }
@@ -21,8 +21,8 @@ info() { printf '%s\n' "$*"; }
 usage() {
   cat <<'EOF'
 usage: install.sh [install|update|uninstall]
-  install/update: download jj-plan + jj-ask
-  uninstall:      remove jj-plan + jj-ask (config kept)
+  install/update: download jj-plan + jj-ask + jj-status
+  uninstall:      remove jj-plan + jj-ask + jj-status (config kept)
 env:
   REPO=<owner>/<repo>   default yigegongjiang/jj-plan
   VERSION=latest|vX.Y.Z default latest
@@ -116,7 +116,7 @@ fi
 
 mkdir -p "$INSTALL_DIR"
 
-info "==> installing jj-plan + jj-ask"
+info "==> installing jj-plan + jj-ask + jj-status"
 info "    repo:    ${REPO}"
 info "    version: ${VERSION}"
 info "    arch:    darwin-${host_arch}"

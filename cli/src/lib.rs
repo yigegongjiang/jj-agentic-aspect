@@ -89,53 +89,55 @@ fn resolve_config_path() -> PathBuf {
     canonical
 }
 
-fn load_config(entry: &str) -> Config {
+/// Fallible config load. The regular CLI path wraps it in `die`; the
+/// `jj-status hook` path must never kill the hosting hook, so it consumes the
+/// Err silently instead.
+pub fn try_load_config() -> Result<Config, String> {
     let path = resolve_config_path();
-    let raw = match std::fs::read_to_string(&path) {
-        Ok(s) => s,
-        Err(e) => die(entry, &format!("unable to read {}: {e}", path.display())),
-    };
-    let parsed: Value = match serde_json::from_str(&raw) {
-        Ok(v) => v,
-        Err(e) => die(entry, &format!("invalid JSON in {}: {e}", path.display())),
-    };
+    let raw = std::fs::read_to_string(&path)
+        .map_err(|e| format!("unable to read {}: {e}", path.display()))?;
+    let parsed: Value = serde_json::from_str(&raw)
+        .map_err(|e| format!("invalid JSON in {}: {e}", path.display()))?;
 
     let str_field = |k: &str| parsed.get(k).and_then(Value::as_str).filter(|s| !s.is_empty());
 
-    let endpoint = match str_field("endpoint") {
-        Some(s) => s.to_string(),
-        None => die(entry, &format!("{} must contain \"endpoint\"", path.display())),
-    };
-    let cf_access_client_id = str_field("cf_access_client_id");
-    let cf_access_client_secret = str_field("cf_access_client_secret");
-    match (cf_access_client_id, cf_access_client_secret) {
-        (Some(id), Some(secret)) => Config {
+    let endpoint = str_field("endpoint")
+        .ok_or_else(|| format!("{} must contain \"endpoint\"", path.display()))?
+        .to_string();
+    match (str_field("cf_access_client_id"), str_field("cf_access_client_secret")) {
+        (Some(id), Some(secret)) => Ok(Config {
             endpoint,
             cf_access_client_id: id.to_string(),
             cf_access_client_secret: secret.to_string(),
-        },
-        _ => die(
-            entry,
-            &format!(
-                "{} must contain \"cf_access_client_id\" + \"cf_access_client_secret\"",
-                path.display()
-            ),
-        ),
+        }),
+        _ => Err(format!(
+            "{} must contain \"cf_access_client_id\" + \"cf_access_client_secret\"",
+            path.display()
+        )),
     }
 }
 
 // ─── HTTP ────────────────────────────────────────────────────────────────
 
-/// Perform one API call. `body` is sent as JSON when present (POST/PATCH).
-/// Returns `None` on 204 / empty body, `Some(json)` otherwise. Any network,
-/// HTTP-error, or non-JSON condition exits via `die`.
-pub fn api(entry: &str, method: &str, path: &str, body: Option<Value>) -> Option<Value> {
-    let cfg = load_config(entry);
+/// Fallible API call. `body` is sent as JSON when present (POST/PATCH).
+/// Returns `Ok(None)` on 204 / empty body, `Ok(Some(json))` otherwise.
+/// `timeout` bounds the whole request — the hook path uses a short one so a
+/// slow network can never stall a Claude Code session.
+pub fn try_api(
+    method: &str,
+    path: &str,
+    body: Option<Value>,
+    timeout: Option<std::time::Duration>,
+) -> Result<Option<Value>, String> {
+    let cfg = try_load_config()?;
     let url = format!("{}{}", cfg.endpoint.trim_end_matches('/'), path);
 
-    let req = ureq::request(method, &url)
+    let mut req = ureq::request(method, &url)
         .set("CF-Access-Client-Id", &cfg.cf_access_client_id)
         .set("CF-Access-Client-Secret", &cfg.cf_access_client_secret);
+    if let Some(t) = timeout {
+        req = req.timeout(t);
+    }
 
     let result = match &body {
         Some(b) => {
@@ -155,23 +157,29 @@ pub fn api(entry: &str, method: &str, path: &str, body: Option<Value>) -> Option
             let status_text = resp.status_text().to_string();
             let text = resp.into_string().unwrap_or_default();
             let msg = if text.is_empty() { status_text } else { text };
-            die(entry, &format!("HTTP {code}: {msg}"));
+            return Err(format!("HTTP {code}: {msg}"));
         }
         Err(ureq::Error::Transport(t)) => {
-            die(entry, &format!("network error: {t}"));
+            return Err(format!("network error: {t}"));
         }
     };
 
     if status == 204 || text.is_empty() {
-        return None;
+        return Ok(None);
     }
     match serde_json::from_str::<Value>(&text) {
-        Ok(v) => Some(v),
+        Ok(v) => Ok(Some(v)),
         Err(_) => {
             let snippet: String = text.chars().take(200).collect();
-            die(entry, &format!("non-JSON response: {snippet}"));
+            Err(format!("non-JSON response: {snippet}"))
         }
     }
+}
+
+/// Perform one API call, exiting via `die` on any failure. The standard path
+/// for every interactive command.
+pub fn api(entry: &str, method: &str, path: &str, body: Option<Value>) -> Option<Value> {
+    try_api(method, path, body, None).unwrap_or_else(|e| die(entry, &e))
 }
 
 /// Percent-encode a path segment like JS `encodeURIComponent`: keep the

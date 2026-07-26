@@ -6,23 +6,27 @@ import { useEffect, useState, type ReactNode } from 'react';
 // the tab this component reads on mount.
 export const PROJECT_TAB_STORAGE_KEY = 'jj-plan_project_tab';
 const STORAGE_KEY = PROJECT_TAB_STORAGE_KEY;
-type Tab = 'plans' | 'asks';
+type Tab = 'plans' | 'asks' | 'sessions';
 const DEFAULT_TAB: Tab = 'plans';
 
 interface Props {
   askCount: number;
   specCount: number;
   taskCount: number;
+  sessionCount: number;
   asks: ReactNode;
   plans: ReactNode;
+  sessions: ReactNode;
 }
 
 export default function ProjectTabs({
   askCount,
   specCount,
   taskCount,
+  sessionCount,
   asks,
   plans,
+  sessions,
 }: Props) {
   const [tab, setTab] = useState<Tab>(DEFAULT_TAB);
   const [hydrated, setHydrated] = useState(false);
@@ -30,7 +34,7 @@ export default function ProjectTabs({
   useEffect(() => {
     if (typeof window === 'undefined') return;
     const saved = window.localStorage.getItem(STORAGE_KEY);
-    if (saved === 'plans' || saved === 'asks') setTab(saved);
+    if (saved === 'plans' || saved === 'asks' || saved === 'sessions') setTab(saved);
     setHydrated(true);
   }, []);
 
@@ -59,8 +63,17 @@ export default function ProjectTabs({
           counts={`${askCount}`}
           fullCounts={`${askCount}`}
         />
+        <TabButton
+          active={tab === 'sessions'}
+          onClick={() => setTab('sessions')}
+          label="SESSIONS"
+          counts={`${sessionCount}`}
+          fullCounts={`${sessionCount}`}
+        />
       </div>
-      <div className="pt-3">{tab === 'plans' ? plans : asks}</div>
+      <div className="pt-3">
+        {tab === 'plans' ? plans : tab === 'asks' ? asks : sessions}
+      </div>
     </div>
   );
 }

@@ -13,6 +13,13 @@
 
 > 历史 27 版 (≤ 0.8.23) 在双文件分界确立前写成, 含文件/函数级细节, 原文照搬未回填; 用户向精简严格自 **0.8.24** 起执行.
 
+## [0.16.0] - 2026-07-26
+
+### Added
+
+- 新增 `jj-status` CLI: 挂进 Claude Code hooks (`~/.claude/settings.json` 指向 `jj-status hook`, 样例见 `jj-status --help`) 后自动记录每个 session 的运行事件 (提示词 / 工具调用 / 停止等); 上报静默且永不干扰宿主 session, 随安装脚本一并安装。
+- dashboard 项目页新增 SESSIONS tab: session 列表 (首条提示词 / 时长 / 事件数) + 单 session 事件时间线; 每条事件提炼重点直接展示, 原始 JSON 可展开, 短内容自动全渲染; 支持删除整个 session。
+
 ## [0.15.0] - 2026-07-23
 
 ### Changed

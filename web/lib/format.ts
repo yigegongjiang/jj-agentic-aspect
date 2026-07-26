@@ -5,6 +5,16 @@ export function fmtTime(ms: number): string {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
 }
 
+export function fmtDuration(ms: number): string {
+  if (!Number.isFinite(ms) || ms < 0) return '';
+  const sec = Math.round(ms / 1000);
+  if (sec < 60) return `${sec}s`;
+  const min = Math.floor(sec / 60);
+  if (min < 60) return `${min}m ${sec % 60}s`;
+  const hr = Math.floor(min / 60);
+  return `${hr}h ${min % 60}m`;
+}
+
 export function fmtRelative(ms: number, now: number = Date.now()): string {
   const diff = now - ms;
   if (diff < 0) return fmtTime(ms);
