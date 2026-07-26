@@ -9,6 +9,7 @@
 # 可用工具
 
 - `gh`: 已登录
+- `wrangler` (`npx wrangler`): 已登录
 
 # 调试
 
@@ -20,30 +21,50 @@ cd cli && cargo build --release && ./target/release/jj-agentic-aspect --version 
 
 # 发布
 
-push `v*` tag 触发 Actions: 部署 Worker + 编译 CLI 二进制 (jj-agentic-aspect × x64/arm64) 附 Release.
+代码变更完成后立即执行 (= 需求交付的最后环节). 交付 = 预部署 + push.
+
+push `v*` tag 触发 Actions: 复跑 Worker 部署 (幂等) + 编译 CLI 二进制 (jj-agentic-aspect × x64/arm64) 附 Release.
 
 ## TL;DR
 
-1. 验证：`cd cli && cargo build --release`
+1. 验证：`cd cli && cargo build --release` + `cd web && bun run typecheck`
 2. 写版本：`VERSION` + `CHANGELOG.md` + `CHANGELOG.dev.md` 同步编辑 (与 tag 一致)
-3. 发布：commit + annotated tag (`-m`) + push branch + tag
-4. 本机自安装：`./scripts/install-local.sh` (源码 release 构建 → `~/.local/bin`)
-5. 修上版 bug：amend + 删远程 tag + 重打 + force push
+3. 预部署：web build + D1 migrations + `npx wrangler deploy` + `./scripts/install-local.sh`
+4. 发布：commit + annotated tag (`-m`) + push branch + tag
 
 ## 1. 验证
 
 ```sh
 cd cli && cargo build --release && ./target/release/jj-agentic-aspect --version
+cd web && bun run typecheck
+cd worker && bun run typecheck
 ```
 
-`--version` 输出须等于根 `VERSION`. build / version 任一失败 → 停止.
+`--version` 输出须等于根 `VERSION`. build / typecheck / version 任一失败 → 停止.
 
 ## 2. 写版本
 
 - 版本号: 默认递增 PATCH; 新功能 → MINOR; 不兼容改动 → MAJOR
 - `VERSION` (唯一信源; CI 校验 `VERSION == tag (去 v)`, 不一致 fail) + `CHANGELOG.md` + `CHANGELOG.dev.md` 同步编辑
 
-## 3. 发布
+## 3. 预部署
+
+本机完成实际交付: Worker + web 上线, CLI 装入本机.
+
+```sh
+cd web && bun install && bun run build                    # 静态导出 → web/out (wrangler [assets] 取用)
+cd ../worker && bun install
+npx wrangler d1 migrations apply jjplan --remote          # 先迁移, 再部署
+npx wrangler deploy
+cd .. && ./scripts/install-local.sh                       # cargo build --release + 装入 ~/.local/bin
+```
+
+- `jjplan` = D1 database label (数据早于改名, 不重命名)
+- web build MUST 在 deploy 前完成, 否则 Worker 带旧静态资源上线
+
+> D1 migrations 直接改远程库 schema/数据, 不可回滚; migrations 目录只增不改已应用条目.
+
+## 4. 发布
 
 ```sh
 git commit -m "X.Y.Z: <一句话>"
@@ -53,28 +74,3 @@ git push origin vX.Y.Z
 ```
 
 > tag MUST 带 message (`-m`): `tag.gpgsign=true` 会把 lightweight tag 强制升为签名 tag 但缺 message → fail.
-
-## 4. 本机自安装
-
-发布后把刚发布的版本装到本机 (源码 release 构建, 与 tag 内容一致):
-
-```sh
-./scripts/install-local.sh   # cargo build --release + 装入 ~/.local/bin
-```
-
-## 5. 修上版 bug
-
-上版存在明显 bug 时, amend 修复后重新发布.
-
-> **commit + tag 必须一起更新**: amend 后 commit hash 变, 但远程 tag 仍指旧 hash → Release 产物与 main HEAD 偏离. 只 force push commit 不够, 远程 tag MUST 删除重建, 否则 Actions 不会重跑.
-
-```sh
-git commit -a --amend --no-edit
-git push --force-with-lease origin main
-git tag -d vX.Y.Z
-git push origin :refs/tags/vX.Y.Z
-git tag vX.Y.Z -m "X.Y.Z"
-git push origin vX.Y.Z
-```
-
-> Release 会被覆写, 旧二进制不可恢复.
