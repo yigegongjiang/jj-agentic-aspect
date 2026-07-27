@@ -9,6 +9,17 @@
 
 > 历史 27 版 (≤ 0.8.23) 在双文件分界确立前写成, 原文照搬未回填; 用户向 / 开发向严格分界自 **0.8.24** 起执行.
 
+## [0.22.0] - 2026-07-27
+
+### Changed
+
+- session 时间线里 assistant 的回复与过程文本改为 markdown 渲染: 标题 / 列表 / 表格 / 代码块 / 链接按格式显示, 长代码横向滚动, 阅读体感接近终端原貌。
+  - 依赖新增 `react-markdown@10` + `remark-gfm@4` + `remark-breaks@4` (web only, First Load JS 102 → 有增量但仍在同量级); MUST NOT 接 `rehype-raw` (XSS 面)。
+  - `web/components/Markdown.tsx`: 显式 `components` 映射 (Tailwind, 文字色继承外层, 故 assistant 亮块与 progress 淡块共用); `pre` 用 `[&>code]:` 重置行内 code 样式; 自写 `remarkHtmlAsText` 把 mdast `html` 节点降级为 `text` (否则 remark-rehype 静默丢弃裸 HTML); `memo` 避免 5s 轮询重复解析。
+- 内容不像 markdown (纯文本 / 日志) 时保持原样显示, 不做多余解析; 每个块右上角 `↔ text` 可随时切回原始文本, `raw` 仍是事件原始记录。
+  - `web/lib/markdown.ts`: `looksLikeMarkdown` — 围栏代码 / 标题 / 列表 / 引用 / 表格行 / 分隔线 / 加粗 / 行内代码 / 链接 9 条正则任一命中即渲染。
+  - `web/components/SessionDetail.tsx`: `ExpandableBlock` 新增 `markdown` / `mdClampClass` 参数 (Stop `max-h-80`, MsgBlock `max-h-44`); md 为块级布局, 折叠从 `line-clamp` 改 `max-height + overflow-hidden`, 且 md 态取消整块点击展开 (让位链接/选中), 仅保留 `more/less`; UserPromptSubmit 保持纯文本。
+
 ## [0.21.0] - 2026-07-26
 
 ### Added

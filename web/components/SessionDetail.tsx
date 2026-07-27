@@ -2,8 +2,10 @@
 
 import { useCallback, useEffect, useState } from 'react';
 
+import Markdown from '@/components/Markdown';
 import { ApiError, api } from '@/lib/api';
 import { fmtDuration, fmtRelative, fmtTime } from '@/lib/format';
+import { looksLikeMarkdown } from '@/lib/markdown';
 import { STATE_STYLE, sessionState } from '@/lib/session';
 import type { Status } from '@/lib/types';
 
@@ -581,6 +583,8 @@ function EventBlock({ pe }: { pe: PE }) {
         pe={pe}
         text={digest(e, pe.data)}
         clampClass="line-clamp-[12]"
+        mdClampClass="max-h-80"
+        markdown
         className="border-l-2 border-green-500 bg-green-950/20 rounded-r-md my-1.5"
         header={
           <>
@@ -696,6 +700,8 @@ function MsgBlock({ item }: { item: MsgItem }) {
       )}
       text={text.length > 0 ? text : null}
       clampClass="line-clamp-6"
+      mdClampClass="max-h-44"
+      markdown
       className="border-l-2 border-zinc-700 bg-zinc-900/40 rounded-r-md my-1"
       header={
         <>
@@ -709,12 +715,15 @@ function MsgBlock({ item }: { item: MsgItem }) {
   );
 }
 
-// 重点内容块 (prompt / assistant 回复 / 进度): 默认 clamp, 点击展开全文, raw 按钮看原始 JSON
+// 重点内容块 (prompt / assistant 回复 / 进度): 默认 clamp, 点击展开全文, raw 按钮看原始 JSON。
+// markdown=true 时内容命中 markdown 构造则默认渲染, `↔ text` 切回原始文本。
 function ExpandableBlock({
   pe,
   rawText,
   text,
   clampClass,
+  mdClampClass = 'max-h-64',
+  markdown = false,
   className,
   header,
   textClass,
@@ -723,41 +732,67 @@ function ExpandableBlock({
   rawText?: string;
   text: string | null;
   clampClass: string;
+  mdClampClass?: string;
+  markdown?: boolean;
   className: string;
   header: React.ReactNode;
   textClass: string;
 }) {
   const [full, setFull] = useState(false);
   const [raw, setRaw] = useState(false);
+  const [asText, setAsText] = useState(false);
+  const isMd = markdown && text !== null && looksLikeMarkdown(text);
+  const renderMd = isMd && !asText;
   const clampable = text !== null && (text.length > 400 || text.split('\n').length > 6);
   return (
     <div className={`px-3 py-2 ${className}`}>
       <div className="flex items-baseline gap-2 text-[10px] font-mono">
         {header}
-        <button
-          onClick={() => setRaw((v) => !v)}
-          className="ml-auto text-zinc-600 hover:text-zinc-300 transition shrink-0"
-        >
-          {raw ? '× raw' : '▾ raw'}
-        </button>
+        <span className="ml-auto flex items-baseline gap-2 shrink-0">
+          {isMd && (
+            <button
+              onClick={() => setAsText((v) => !v)}
+              title={asText ? 'render as markdown' : 'show raw markdown source'}
+              className="text-zinc-600 hover:text-zinc-300 transition"
+            >
+              {asText ? '↔ md' : '↔ text'}
+            </button>
+          )}
+          <button
+            onClick={() => setRaw((v) => !v)}
+            title="hook event JSON"
+            className="text-zinc-600 hover:text-zinc-300 transition"
+          >
+            {raw ? '× raw' : '▾ raw'}
+          </button>
+        </span>
       </div>
       {text !== null && (
         <>
-          <div
-            role={clampable ? 'button' : undefined}
-            tabIndex={clampable ? 0 : undefined}
-            onClick={clampable ? () => setFull((v) => !v) : undefined}
-            onKeyDown={
-              clampable
-                ? (e) => {
-                    if (e.key === 'Enter' || e.key === ' ') setFull((v) => !v);
-                  }
-                : undefined
-            }
-            className={`mt-1 text-sm leading-snug whitespace-pre-wrap break-words ${textClass} ${full ? '' : clampClass} ${clampable ? 'cursor-pointer' : ''}`}
-          >
-            {text}
-          </div>
+          {renderMd ? (
+            // markdown 是块级布局, line-clamp 会破坏它 → 改用 max-height 截断
+            <div
+              className={`mt-1 ${textClass} ${full || !clampable ? '' : `${mdClampClass} overflow-hidden`}`}
+            >
+              <Markdown text={text} />
+            </div>
+          ) : (
+            <div
+              role={clampable ? 'button' : undefined}
+              tabIndex={clampable ? 0 : undefined}
+              onClick={clampable ? () => setFull((v) => !v) : undefined}
+              onKeyDown={
+                clampable
+                  ? (e) => {
+                      if (e.key === 'Enter' || e.key === ' ') setFull((v) => !v);
+                    }
+                  : undefined
+              }
+              className={`mt-1 text-sm leading-snug whitespace-pre-wrap break-words ${textClass} ${full ? '' : clampClass} ${clampable ? 'cursor-pointer' : ''}`}
+            >
+              {text}
+            </div>
+          )}
           {/* 明示可展开: 隐形点击区之外给一个常显按钮 */}
           {clampable && (
             <button
