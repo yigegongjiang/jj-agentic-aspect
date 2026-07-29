@@ -28,10 +28,14 @@ const DEFAULT_SOURCE: &str = "claude-code";
 // Upload budget (UTF-16 units), safely under the worker's MAX_BODY_LEN after
 // JSON escaping overhead.
 const BODY_BUDGET: usize = 60000;
-// Per-string truncation passes: generous first, aggressive fallback.
-const STR_LIMITS: [usize; 2] = [2048, 256];
+// Per-string truncation passes, tried in order until the payload fits
+// BODY_BUDGET. The first pass lets a single string use nearly the whole budget,
+// so ordinary events (prompts, assistant replies, tool responses) reach the
+// dashboard verbatim; later passes only kick in for payloads that genuinely
+// cannot fit.
+const STR_LIMITS: [usize; 5] = [58000, 24000, 8192, 2048, 256];
 // Arrays beyond this length carry no reading value on a dashboard timeline.
-const MAX_ARRAY_ITEMS: usize = 100;
+const MAX_ARRAY_ITEMS: usize = 1000;
 // Hard deadline for the upload; a hook must never stall the session.
 const HOOK_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -108,9 +112,9 @@ fn shrink(v: &mut Value, max_str: usize) {
     }
 }
 
-/// Serialize the payload within BODY_BUDGET: try the generous string limit,
-/// then the aggressive one, then fall back to a flat skeleton of top-level
-/// scalars (still valid JSON, still carries the event identity).
+/// Serialize the payload within BODY_BUDGET: walk STR_LIMITS from the most
+/// generous pass down, then fall back to a flat skeleton of top-level scalars
+/// (still valid JSON, still carries the event identity).
 fn fit_body(payload: &Value) -> String {
     for max_str in STR_LIMITS {
         let mut candidate = payload.clone();

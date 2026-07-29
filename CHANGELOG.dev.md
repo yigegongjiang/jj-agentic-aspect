@@ -9,6 +9,18 @@
 
 > 历史 27 版 (≤ 0.8.23) 在双文件分界确立前写成, 原文照搬未回填; 用户向 / 开发向严格分界自 **0.8.24** 起执行.
 
+## [0.23.0] - 2026-07-29
+
+### Changed
+
+- session 事件的长文本不再被压到 2048 字符: prompt / assistant 回复 / 工具输出等字段现在可占满单条事件的整体额度, 常规内容完整入库, dashboard 上看到的就是原文。
+  - `cli/src/hook.rs`: `STR_LIMITS` `[2048, 256]` → `[58000, 24000, 8192, 2048, 256]`; `BODY_BUDGET` 60000 / worker `MAX_BODY_LEN` 65536 均不变 → 单条 body 上限与 API 契约零变更, 只是单字段可用满预算。
+  - 截断源定位: `…[truncated, N chars total]` 唯一产生点 = `hook.rs` `clip()`; worker 无二次截断, web 仅 clamp (可展开) + raw 全文 → 与 hook 输入无关, 非 web 限制。
+- 仅当单条事件确实超额时才逐级压缩 (24000 → 8192 → 2048 → 256 字符) 并保留原始长度标记; 长数组保留条数由 100 提到 1000。
+  - `MAX_ARRAY_ITEMS` 100 → 1000 (超预算时仍由 `fit_body` 逐档兜底)。
+  - 实测 (0.23.0 二进制): 5000 字符字段完整入库无标记; `tool_response` 200000 + `tool_input.command` 50000 的 payload 降到 24000 档, body 48236 < 60000, JSON 仍 valid。
+  - D1 侧余量核对: 单 string / row 上限 2,000,000 bytes, 远高于 65536 UTF-16 上限, 无需调 worker。
+
 ## [0.22.0] - 2026-07-27
 
 ### Changed
