@@ -9,6 +9,41 @@
 
 > 历史 27 版 (≤ 0.8.23) 在双文件分界确立前写成, 原文照搬未回填; 用户向 / 开发向严格分界自 **0.8.24** 起执行.
 
+## [0.24.0] - 2026-07-30
+
+> 排查基线 (实测): Claude Code 官方 30 事件 = 本机 settings.json 30 = `hook --help` 样例 30; Codex 11 全接 -> 事件覆盖无缺口。D1 现状 21 类事件有样本, 最长 session 486 事件 / 674KB, 各事件 payload keys 已逐一核对。
+
+### Changed
+
+- 采集与展示全面放开, 不再为性能保留上限 (个人自用, 全量优先于性能)。
+  - `cli/src/lib.rs` 新增 `MAX_STATUS_BODY_LEN = 1_500_000` (与 spec/task 的 `MAX_BODY_LEN = 65536` 分离, 后者是既有契约); worker 同名常量同步, statuses ingest 校验改用它。
+  - `cli/src/hook.rs`: `BODY_BUDGET` 语义由 UTF-16 units 改 **UTF-8 bytes** 并提到 `1_400_000` (D1 单值上限 2,000,000 bytes; UTF-16 length ≤ UTF-8 bytes, 故同时满足 worker 的 length 校验); `STR_LIMITS` → `[1_300_000, 400_000, 120_000, 24_000, 2_048, 256]`; `MAX_ARRAY_ITEMS` 1000 → 100_000 (等同不截); `hook sessions --limit` 去掉 max 200, 支持 `0` = 全量。
+  - `worker/src/index.ts`: session timeline 去掉 `SESSION_EVENTS_LIMIT` (原 `ORDER BY id LIMIT 5000` 且是**取头**, 长 session 看不到最新), 改无上限全量正序; `SESSION_PROMPT_PREVIEW_LEN` 300 → 1000。
+  - 实测 (0.24.0 端到端): 500KB ASCII `tool_response` 完整入库 (body 500209, 无标记); 3MB payload 降到首档 1.3M 字符后入库; 20 万中文 prompt 完整入库 (body_utf16 200142)。
+- 与最终回复重复的过程文本不再删除, 改为折叠一行 + 可展开。
+  - `MsgItem` 加 `dupOfFinal`; Stop 分支由 `items.splice(i, 1)` 改置标记; `MsgBlock` 在 `dupOfFinal && !dupOpen` 时渲染紧凑一行 (分片数 + 提示), 点开即完整 ExpandableBlock。
+- hook 上传失败自动重试 1 次 (仍每次限时 10s, 仍静默, 不引入队列/守护)。
+
+- 内容被宿主 agent 自己截断时 (标记 `[truncated, N chars total]`, 通常是每轮注入的提示文本) 挂 `host-truncated` 标记: 原文没交给 hook, 本工具无法还原, 明示而非让人以为是页面隐藏了数据。
+  - 实测证据 (session 647d7ac5 首条 UserPromptSubmit): 落库 `prompt` 全长 94 字符, `[truncated, 4965 chars total]` 在字段第 1 位, 无本工具的 `…` 前缀; 宿主自己的 transcript jsonl 同一条也是 94 字符 -> 4965 字符原文从未出 harness。被截的是注入的 system-reminder (CLAUDE.md / memory), 用户原话与 assistant 回复均完整。
+  - 全库分布: 上游标记 20 条 (PostToolUse 15 / PostToolBatch 3 / UserPromptSubmit 1 / PreToolUse 1); 本工具标记 2132 条中 2107 条在 0.23.0 之前, 0.23.0 之后的 25 条经逐条核对全是「文本里恰好含标记字符串」的误匹配 (本次会话的 grep / 源码 / 回答) + 4 条本地压力测试 -> 放宽后无真实生产截断, 无需再提上限。
+  - `web/components/SessionDetail.tsx`: `HOST_TRUNC_RE = /(^|[^…])\[truncated, \d+ chars total\]/` 判上游截断; `TruncBadge` 入参由 data 改 pe (需 body 原文), 同时承载 `host-truncated` (orange) 与 skeleton `truncated` (amber); 字段级 clip 不挂标记 (标记就在文本尾部, 自解释)。
+- 事件摘要行不再空白: 未识别 / 新增事件自动列出自身关键字段, 并补全批量工具调用、压缩摘要、斜杠命令展开、通知类型等事件的重点信息。
+  - `web/components/SessionDetail.tsx`: 新增 `ENVELOPE_KEYS` (session_id/cwd/transcript_path/prompt_id/turn_id/permission_mode/agent_type/agent_id/effort/model/stop_hook_active/…) + `fallbackDigest` (剔除信封字段后压 `k=v`, 最多 6 项, 字符串 160 截断, 数组/对象显示计数或 key 名) 作 `digest` default 分支 → 未知事件天然覆盖。
+  - 专项分支按实测 payload 补全: `PostToolBatch` → `tool_calls` 工具名清单 (`batchDigest`), `PostCompact` → `compact_summary`, `PreCompact` → `custom_instructions`, `UserPromptExpansion` → `command_name`+`command_args`+`expansion_type` (旧代码取的 `data.command` 实际不存在), `Notification` → `notification_type`, `SessionStart` → `session_title`。
+- 工具调用展开后新增可读的输出正文 (原先只有转义过的原始 JSON); 失败信息可点击展开全文; subagent 的最终回复改为大块展示。
+  - `toolResponseText`: 实测 `tool_response` 三形态 (object 3514 / text 486 / array 57) — 字符串直取, 数组取 `text` 拼接, 对象取 `stdout`/`stderr`/`content`/`codeText`/`text`/`result`; `RawPre` 抽出通用 `TextPre`。
+  - `ToolRow` 错误块加 `errFull` 状态 (原 `line-clamp-4` 不可展开); `EventBlock` 新增 `SubagentStop` 分支 (cyan `ExpandableBlock` + markdown, 与 Stop 绿块对称, header 带 agent_type)。
+  - `TruncBadge`: `_truncated === true` 时在 MinorEventRow / ExpandableBlock / ToolRow 摘要行挂 amber 标记 (title 带 `_dropped_keys`)。
+- assistant 过程文本被工具调用打断后不再拆成多块, 按消息合并回一块。
+  - `buildTimeline` MessageDisplay 分支: 由「仅与相邻末尾块合并」改为在当前 turn 内 `find` 同 `message_id` 的首个 msg item; Stop 去重仍取最后一个 msg item, 语义不变。
+
+### Fixed
+- 上报内容不再有静默丢弃: 无法解析的 hook 数据改为原样记录成一条事件; 单条超额时保留全部字段名与占位说明, 页面上以 `truncated` 标记该事件不完整。
+  - `cli/src/hook.rs` `run_ingest`: serde 解析失败不再 `return`, 改造合成 payload `{hook_event_name: "UnparsedPayload", _parse_error, _unparsed}` 走同一上报路径 (session_id 缺失 → `unknown`); `project_name` 全失败 → project `unknown` 而非丢事件。
+  - `fit_body` skeleton: 对象/数组不再整个消失, 留 `…[dropped: array of N items]` / `…[dropped: object with keys …]`; per-key 额度按 `BODY_BUDGET / (key_count * 2)` clamp 16..256 自适应; skeleton 仍超预算时降级为 identity (`hook_event_name`/`session_id`/`cwd` + `_truncated` + `_dropped_keys` + `_dropped_key_names`), 保证永不产出超限 body (超限 = worker 400 = 整条事件丢失)。
+  - 实测: 非 JSON stdin → `UnparsedPayload` 原文可见; 400 字段 × 500 字符 → skeleton 保 406 keys / body 45333; 3000 字段 × 500 字符 → identity 保 3003 个字段名 (8000 字符内)。
+
 ## [0.23.0] - 2026-07-29
 
 ### Changed

@@ -91,11 +91,12 @@ const MAX_EVENT_LEN = 64;
 const MAX_SOURCE_LEN = 64;
 const DEFAULT_SOURCE = 'claude-code';
 const SESSION_LIST_LIMIT_DEFAULT = 50;
-// Hard cap on events returned for one session. Client-side truncation keeps
-// individual bodies small; this bounds the worst-case payload.
-const SESSION_EVENTS_LIMIT = 5000;
+// hook 事件 body 走独立上限 (spec/task 的 MAX_BODY_LEN 是另一套契约): 事件是原样
+// 落盘的观测数据, 要装得下整段工具输出 / 长 prompt。D1 单值上限 2,000,000 bytes;
+// 这里按 UTF-16 length 校验, 而 UTF-16 length <= UTF-8 bytes, 故留有余量。
+const MAX_STATUS_BODY_LEN = 1_500_000;
 // Session-card preview length (chars) for the first user prompt.
-const SESSION_PROMPT_PREVIEW_LEN = 300;
+const SESSION_PROMPT_PREVIEW_LEN = 1000;
 
 // Cross-project ask search: more generous default than the per-project list.
 const ASK_SEARCH_LIMIT_DEFAULT = 50;
@@ -1084,8 +1085,12 @@ function parseStatusPayload(raw: {
     }
     source = raw.source;
   }
-  if (typeof raw.body !== 'string' || raw.body.length === 0 || raw.body.length > MAX_BODY_LEN) {
-    return { ok: false, error: `body must be string of 1..${MAX_BODY_LEN} chars` };
+  if (
+    typeof raw.body !== 'string' ||
+    raw.body.length === 0 ||
+    raw.body.length > MAX_STATUS_BODY_LEN
+  ) {
+    return { ok: false, error: `body must be string of 1..${MAX_STATUS_BODY_LEN} chars` };
   }
   return { ok: true, value: { session_id: raw.session_id, event: raw.event, source, body: raw.body } };
 }
@@ -1194,14 +1199,16 @@ app.get('/projects/:name/sessions', async (c) => {
 });
 
 // One session's full timeline, oldest first (ULID id order == insert order).
+// No row cap: a session's timeline is returned in full — a partial timeline is
+// indistinguishable from a partial session when reviewing what happened.
 app.get('/projects/:name/sessions/:sid/statuses', async (c) => {
   const name = c.req.param('name');
   const sid = c.req.param('sid');
   const { results } = await c.env.DB
     .prepare(
-      'SELECT id, project_id, session_id, event, source, body, created_at FROM statuses WHERE project_id = ? AND session_id = ? ORDER BY id LIMIT ?',
+      'SELECT id, project_id, session_id, event, source, body, created_at FROM statuses WHERE project_id = ? AND session_id = ? ORDER BY id',
     )
-    .bind(name, sid, SESSION_EVENTS_LIMIT)
+    .bind(name, sid)
     .all<StatusRow>();
   if (results.length === 0) return c.json({ error: 'session not found' }, 404);
   return c.json(results);

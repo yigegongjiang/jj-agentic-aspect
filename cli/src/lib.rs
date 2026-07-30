@@ -30,6 +30,9 @@ pub const SPEC_STATUSES: &[&str] = &["active", "done"];
 pub const TASK_STATUSES: &[&str] = &["todo", "doing", "done", "blocked"];
 pub const MAX_TITLE_LEN: usize = 200;
 pub const MAX_BODY_LEN: usize = 65536;
+/// hook 事件 body 走独立上限: 事件是「原样落盘的观测数据」, 要能装下整段工具
+/// 输出 / 长 prompt。D1 单值上限 2,000,000 bytes, 这里留足 JSON 转义余量。
+pub const MAX_STATUS_BODY_LEN: usize = 1_500_000;
 pub const MAX_PROJECT_NAME_LEN: usize = 128;
 
 pub const ASK_LIMIT_DEFAULT: u32 = 3;

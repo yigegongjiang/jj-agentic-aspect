@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use crate::{
     api, die, die_usage, encode_uri_component, print, read_stdin, try_api, validate_project,
-    ENTRY, MAX_BODY_LEN, VERSION,
+    ENTRY, MAX_STATUS_BODY_LEN, VERSION,
 };
 use serde_json::{json, Map, Value};
 
@@ -20,23 +20,23 @@ const MAX_SESSION_ID_LEN: usize = 128;
 const MAX_EVENT_LEN: usize = 64;
 const MAX_SOURCE_LEN: usize = 64;
 const SESSION_LIST_LIMIT_DEFAULT: u32 = 50;
-const SESSION_LIST_LIMIT_MAX: u32 = 200;
 
 /// Default event source preserves the original Claude Code-only CLI contract.
 const DEFAULT_SOURCE: &str = "claude-code";
 
-// Upload budget (UTF-16 units), safely under the worker's MAX_BODY_LEN after
-// JSON escaping overhead.
-const BODY_BUDGET: usize = 60000;
+// Upload budget in UTF-8 bytes (what D1 actually stores), kept under the
+// worker's MAX_STATUS_BODY_LEN — which is checked in UTF-16 units, and UTF-16
+// length is never larger than the UTF-8 byte count, so this bound satisfies
+// both. Sized so whole tool outputs and long prompts land verbatim.
+const BODY_BUDGET: usize = 1_400_000;
 // Per-string truncation passes, tried in order until the payload fits
-// BODY_BUDGET. The first pass lets a single string use nearly the whole budget,
-// so ordinary events (prompts, assistant replies, tool responses) reach the
-// dashboard verbatim; later passes only kick in for payloads that genuinely
-// cannot fit.
-const STR_LIMITS: [usize; 5] = [58000, 24000, 8192, 2048, 256];
-// Arrays beyond this length carry no reading value on a dashboard timeline.
-const MAX_ARRAY_ITEMS: usize = 1000;
-// Hard deadline for the upload; a hook must never stall the session.
+// BODY_BUDGET. The first pass effectively means "no truncation" for anything a
+// real hook emits; the later ones only exist so a pathological payload still
+// gets recorded instead of being dropped.
+const STR_LIMITS: [usize; 6] = [1_300_000, 400_000, 120_000, 24_000, 2_048, 256];
+// Effectively no array cap — the byte budget above is the real bound.
+const MAX_ARRAY_ITEMS: usize = 100_000;
+// Hard deadline per upload attempt; a hook must never stall the session.
 const HOOK_TIMEOUT: Duration = Duration::from_secs(10);
 
 fn usage(key: &str) -> String {
@@ -44,7 +44,7 @@ fn usage(key: &str) -> String {
         "help" => "jj-agentic-aspect hook --help".into(),
         "hook.ingest" => "jj-agentic-aspect hook [--source <s>]   (hook JSON on stdin)".into(),
         "hook.sessions" => format!(
-            "jj-agentic-aspect hook sessions <project> [--limit N]   (default {SESSION_LIST_LIMIT_DEFAULT}, max {SESSION_LIST_LIMIT_MAX})"
+            "jj-agentic-aspect hook sessions <project> [--limit N]   (default {SESSION_LIST_LIMIT_DEFAULT}, 0 = 全部)"
         ),
         "hook.ls" => "jj-agentic-aspect hook ls <project> <session_id>".into(),
         "hook.rm" => "jj-agentic-aspect hook rm <project> <session_id>".into(),
@@ -113,33 +113,79 @@ fn shrink(v: &mut Value, max_str: usize) {
 }
 
 /// Serialize the payload within BODY_BUDGET: walk STR_LIMITS from the most
-/// generous pass down, then fall back to a flat skeleton of top-level scalars
-/// (still valid JSON, still carries the event identity).
+/// generous pass down, then fall back to a flat skeleton of top-level keys
+/// (nested values become "…[dropped: …]" placeholders so no field vanishes
+/// silently), and finally to the event's identity alone. Every path returns
+/// valid JSON within BODY_BUDGET — an over-budget body would be rejected by the
+/// worker and the event lost.
 fn fit_body(payload: &Value) -> String {
     for max_str in STR_LIMITS {
         let mut candidate = payload.clone();
         shrink(&mut candidate, max_str);
         let s = serde_json::to_string(&candidate).unwrap_or_default();
-        if !s.is_empty() && len16(&s) <= BODY_BUDGET {
+        if !s.is_empty() && s.len() <= BODY_BUDGET {
             return s;
         }
     }
+    // Share the budget across however many top-level keys there are, so a
+    // payload with hundreds of fields keeps all of its keys (with short value
+    // prefixes) instead of collapsing to nothing.
+    let key_count = payload.as_object().map(Map::len).unwrap_or(0).max(1);
+    let per_key = (BODY_BUDGET / (key_count * 2)).clamp(16, 256);
     let mut skeleton = Map::new();
     if let Some(obj) = payload.as_object() {
         for (k, val) in obj {
             match val {
                 Value::String(s) => {
-                    skeleton.insert(k.clone(), Value::String(clip(s, 256)));
+                    skeleton.insert(k.clone(), Value::String(clip(s, per_key)));
                 }
                 Value::Number(_) | Value::Bool(_) | Value::Null => {
                     skeleton.insert(k.clone(), val.clone());
                 }
-                _ => {}
+                // Nested values can't be kept at this size, but the key must
+                // still show up — "the field existed and was dropped" is
+                // information the dashboard should not lose.
+                Value::Array(items) => {
+                    skeleton.insert(
+                        k.clone(),
+                        Value::String(format!("…[dropped: array of {} items]", items.len())),
+                    );
+                }
+                Value::Object(map) => {
+                    skeleton.insert(
+                        k.clone(),
+                        Value::String(format!(
+                            "…[dropped: object with keys {}]",
+                            clip(&map.keys().cloned().collect::<Vec<_>>().join(","), per_key)
+                        )),
+                    );
+                }
             }
         }
     }
     skeleton.insert("_truncated".into(), Value::Bool(true));
-    serde_json::to_string(&Value::Object(skeleton)).unwrap_or_else(|_| "{\"_truncated\":true}".into())
+    let s = serde_json::to_string(&Value::Object(skeleton)).unwrap_or_default();
+    if !s.is_empty() && s.len() <= BODY_BUDGET {
+        return s;
+    }
+    // Even the skeleton can overflow (hundreds of top-level keys). Keep only
+    // the event's identity plus a count of what was dropped: an oversized body
+    // would be rejected by the worker, which would lose the event entirely.
+    let obj = payload.as_object();
+    let identity = json!({
+        "hook_event_name": payload.get("hook_event_name").cloned().unwrap_or(Value::Null),
+        "session_id": payload.get("session_id").cloned().unwrap_or(Value::Null),
+        "cwd": payload.get("cwd").cloned().unwrap_or(Value::Null),
+        "_truncated": true,
+        "_dropped_keys": obj.map(Map::len).unwrap_or(0),
+        // Values are gone at this point; the field names still say what the
+        // event carried.
+        "_dropped_key_names": clip(
+            &obj.map(|o| o.keys().cloned().collect::<Vec<_>>().join(",")).unwrap_or_default(),
+            8000,
+        ),
+    });
+    serde_json::to_string(&identity).unwrap_or_else(|_| "{\"_truncated\":true}".into())
 }
 
 /// Project = basename of $CLAUDE_PROJECT_DIR (the session's start directory,
@@ -197,9 +243,17 @@ fn run_ingest(source: &str) {
     if raw.trim().is_empty() {
         return;
     }
+    // Unparsable stdin still gets reported, wrapped in a synthetic event: a
+    // silent drop would make the occurrence invisible on the dashboard, which
+    // is exactly when you need to see it. The raw text rides along as a field,
+    // so fit_body clips it like any other string.
     let payload: Value = match serde_json::from_str(&raw) {
         Ok(v) => v,
-        Err(_) => return,
+        Err(e) => json!({
+            "hook_event_name": "UnparsedPayload",
+            "_parse_error": e.to_string(),
+            "_unparsed": raw,
+        }),
     };
     let session_id = clip(
         payload.get("session_id").and_then(Value::as_str).unwrap_or("unknown"),
@@ -212,17 +266,23 @@ fn run_ingest(source: &str) {
             .unwrap_or("Unknown"),
         MAX_EVENT_LEN,
     );
+    // A basename is essentially always derivable; when it isn't, park the event
+    // under "unknown" rather than dropping it.
     let project = match project_name(&payload) {
         Some(p) if len16(&p) <= 128 => p,
-        _ => return,
+        _ => "unknown".to_string(),
     };
     let body = fit_body(&payload);
-    debug_assert!(len16(&body) <= MAX_BODY_LEN);
+    debug_assert!(len16(&body) <= MAX_STATUS_BODY_LEN);
 
     let path = format!("/projects/{}/statuses", encode_uri_component(&project));
     let upload = json!({ "session_id": session_id, "event": event, "source": source, "body": body });
-    // Ignore the outcome entirely: losing one event beats disturbing a session.
-    let _ = try_api("POST", &path, Some(upload), Some(HOOK_TIMEOUT));
+    // One retry: a transient network blip shouldn't cost an event. Still capped
+    // by HOOK_TIMEOUT per attempt and still silent on failure — a hook must
+    // never disturb the hosting session.
+    if try_api("POST", &path, Some(upload.clone()), Some(HOOK_TIMEOUT)).is_err() {
+        let _ = try_api("POST", &path, Some(upload), Some(HOOK_TIMEOUT));
+    }
 }
 
 fn parse_project_session(key: &str, args: &[String]) -> (String, String) {
@@ -260,10 +320,10 @@ fn parse_sessions_args(args: &[String]) -> (String, Option<u32>) {
                 _ => fail_usage("hook.sessions", "missing <N> after --limit"),
             };
             match v.parse::<u32>() {
-                Ok(n) if (1..=SESSION_LIST_LIMIT_MAX).contains(&n) => limit = Some(n),
+                Ok(n) => limit = Some(n),
                 _ => fail_usage(
                     "hook.sessions",
-                    &format!("--limit must be integer in 1..{SESSION_LIST_LIMIT_MAX}"),
+                    "--limit must be a non-negative integer (0 = all)",
                 ),
             }
         } else if arg.starts_with("--") {
@@ -327,7 +387,7 @@ pub fn print_help() {
     let help = HELP
         .replace("{VERSION}", VERSION)
         .replace("{SESSION_LIST_LIMIT_DEFAULT}", &SESSION_LIST_LIMIT_DEFAULT.to_string())
-        .replace("{SESSION_LIST_LIMIT_MAX}", &SESSION_LIST_LIMIT_MAX.to_string());
+        .replace("{SESSION_LIST_LIMIT_MAX}", "0 = 全部");
     print!("{help}");
 }
 
@@ -354,7 +414,10 @@ project (name) -- session (session_id, 来自宿主 agent) -- event (id=ULID, �
 
 # HOOK 行为
 - stdin 读 hook JSON, 提取 session_id + hook_event_name, 原始 JSON 作 body 上报.
-- 超长字段递归截断 (带 truncated 标记), 超长数组截前 100 项, 保证 body 不超限.
+- 默认不截断: 单条 body 额度 1.4 MB (D1 单值上限内), 整段工具输出 / 长 prompt 原样入库.
+- 仅极端超额才逐档压缩 (1.3M/400K/120K/24K/2048/256 字符, 带 truncated 标记); 数组不设条数上限.
+- 再超额则退化为顶层字段骨架 (标量原样, 对象/数组留 key + 占位), 最后退化为事件标识 + 全部字段名, 不静默消失.
+- stdin 非 JSON 也上报 (event=UnparsedPayload, body 带原文), 不静默丢弃; 上传失败自动重试 1 次.
 - 永远 exit 0, 不写 stdout, 上报限时 10s: 任何失败静默丢弃, 绝不干扰宿主 session.
 - 未知 flag 静默忽略 (hook 行配置错误也不得影响宿主).
 
@@ -417,7 +480,7 @@ project (name) -- session (session_id, 来自宿主 agent) -- event (id=ULID, �
 
 jj-agentic-aspect hook [--source <s>]
   stdin=hook JSON; 无输出, 永远 exit 0. source 默认 claude-code, 超 64 字符截断.
-jj-agentic-aspect hook sessions <project> [--limit N]   (default {SESSION_LIST_LIMIT_DEFAULT}, max {SESSION_LIST_LIMIT_MAX}, by last_at DESC)
+jj-agentic-aspect hook sessions <project> [--limit N]   (default {SESSION_LIST_LIMIT_DEFAULT}, {SESSION_LIST_LIMIT_MAX}, by last_at DESC)
   -> [{session_id, source, events_count, first_at, last_at, first_prompt}]
   err: 404
 jj-agentic-aspect hook ls <project> <session_id>

@@ -166,6 +166,8 @@ interface MsgItem {
   messageId: string | null;
   chunks: { index: number | null; delta: string; pe: PE }[];
   final: boolean;
+  // 内容与 Stop 的最终回复相同 -> 折叠成一行, 但绝不丢弃 (raw 仍可展开)
+  dupOfFinal: boolean;
 }
 
 type Item = ToolItem | EventItem | MsgItem;
@@ -227,10 +229,17 @@ function buildTimeline(events: PE[]): { turns: Turn[]; toolCount: number; errorC
       const idxRaw = pe.data?.index;
       const idx = typeof idxRaw === 'number' ? idxRaw : null;
       const isFinal = pe.data?.final === true;
-      const last = current.items[current.items.length - 1];
-      if (last && last.kind === 'msg' && mid !== null && last.messageId === mid) {
-        last.chunks.push({ index: idx, delta, pe });
-        last.final = last.final || isFinal;
+      // 同 message_id 的分片合并到该消息的首个块 —— hook 异步执行, 分片可能被
+      // 别的事件 (工具调用) 隔开, 只看相邻会把一条消息拆成多块。
+      const open =
+        mid === null
+          ? null
+          : (current.items.find((it) => it.kind === 'msg' && it.messageId === mid) as
+              | MsgItem
+              | undefined) ?? null;
+      if (open) {
+        open.chunks.push({ index: idx, delta, pe });
+        open.final = open.final || isFinal;
       } else {
         current.items.push({
           kind: 'msg',
@@ -239,12 +248,14 @@ function buildTimeline(events: PE[]): { turns: Turn[]; toolCount: number; errorC
           messageId: mid,
           chunks: [{ index: idx, delta, pe }],
           final: isFinal,
+          dupOfFinal: false,
         });
       }
       continue;
     }
     if (e === 'Stop') {
-      // 末条进度块 = 最终回复本身 (Stop 绿块已展示) → 去重丢弃
+      // 末条进度块 = 最终回复本身 (Stop 绿块已展示) → 标记为重复, 折叠成一行,
+      // 不删除: 删掉就等于时间线上少了一条真实事件。
       const finalText = str(pe.data?.last_assistant_message);
       for (let i = current.items.length - 1; i >= 0; i--) {
         const it = current.items[i];
@@ -252,7 +263,7 @@ function buildTimeline(events: PE[]): { turns: Turn[]; toolCount: number; errorC
         if (finalText !== null) {
           const a = normForCompare(msgText(it));
           const b = normForCompare(finalText);
-          if (a.length > 0 && (a.startsWith(b) || b.startsWith(a))) current.items.splice(i, 1);
+          if (a.length > 0 && (a.startsWith(b) || b.startsWith(a))) it.dupOfFinal = true;
         }
         break;
       }
@@ -308,7 +319,45 @@ function str(v: unknown): string | null {
   return typeof v === 'string' && v.length > 0 ? v : null;
 }
 
-// 每类事件的「重点」: 一句话 digest。取不到关键字段时回退 raw JSON。
+// 每条事件都带的信封字段: 摘要里没有信息量 (session/turn 标识、运行态), 且概览条已显示
+const ENVELOPE_KEYS = new Set([
+  'hook_event_name',
+  'session_id',
+  'transcript_path',
+  'agent_transcript_path',
+  'cwd',
+  'prompt_id',
+  'turn_id',
+  'permission_mode',
+  'agent_type',
+  'agent_id',
+  'effort',
+  'model',
+  'stop_hook_active',
+]);
+
+// 兜底摘要: 剔除信封字段后把余下字段压成 `k=v`。未知 / 新增事件 (上游随时会加)
+// 也能在摘要行看到实质内容, 而不是空白一行。
+function fallbackDigest(data: Json): string | null {
+  const parts: string[] = [];
+  for (const [k, v] of Object.entries(data)) {
+    if (ENVELOPE_KEYS.has(k)) continue;
+    if (v === null || v === undefined || v === '') continue;
+    parts.push(`${k}=${compactValue(v)}`);
+    if (parts.length >= 6) break;
+  }
+  return parts.length > 0 ? parts.join(' · ') : null;
+}
+
+function compactValue(v: unknown): string {
+  if (typeof v === 'string') return v.length > 160 ? `${v.slice(0, 160)}…` : v;
+  if (Array.isArray(v)) return `[${v.length} items]`;
+  if (typeof v === 'object' && v !== null) return `{${Object.keys(v as Json).join(',')}}`;
+  return String(v);
+}
+
+// 每类事件的「重点」: 一句话 digest。字段名取自实测 payload (Claude Code 2.1.220 /
+// Codex); 命中不了的一律走 fallbackDigest, 保证任何事件都不是空行。
 // 字段兼容: UserPromptSubmit 新版 user_input / 旧版 prompt。
 function digest(event: string, data: Json | null): string | null {
   if (!data) return null;
@@ -316,25 +365,44 @@ function digest(event: string, data: Json | null): string | null {
     case 'UserPromptSubmit':
       return str(data.prompt) ?? str(data.user_input);
     case 'Notification':
-      return str(data.message);
+      return joinParts(str(data.notification_type), str(data.message));
     case 'PermissionRequest':
       return joinParts(toolName(data), toolDigest(data));
     case 'SessionStart':
-      return joinParts(str(data.source) && `source: ${str(data.source)}`, str(data.model));
+      return joinParts(
+        str(data.source) && `source: ${str(data.source)}`,
+        str(data.session_title),
+      );
     case 'SessionEnd':
       return str(data.reason) && `reason: ${str(data.reason)}`;
     case 'PreCompact':
+      return joinParts(
+        str(data.trigger) && `trigger: ${str(data.trigger)}`,
+        str(data.custom_instructions),
+      );
     case 'PostCompact':
-      return str(data.trigger) && `trigger: ${str(data.trigger)}`;
+      return joinParts(
+        str(data.trigger) && `trigger: ${str(data.trigger)}`,
+        str(data.compact_summary),
+      );
     case 'SubagentStart':
-      return str(data.agent_type) ?? str(data.description) ?? str(data.prompt);
+      return joinParts(str(data.agent_type), str(data.description) ?? str(data.prompt));
     case 'Stop':
     case 'SubagentStop':
       return str(data.last_assistant_message);
     case 'StopFailure':
       return str(data.error) ?? str(data.reason) ?? str(data.message);
     case 'UserPromptExpansion':
-      return str(data.command) ?? str(data.prompt);
+      return (
+        joinParts(
+          str(data.command_name) ?? str(data.command),
+          str(data.command_args),
+          str(data.expansion_type),
+        ) ?? str(data.prompt)
+      );
+    case 'PostToolBatch':
+      // tool_calls = 这批并发调用; 摘要给工具名清单, 明细在 raw
+      return batchDigest(data.tool_calls) ?? fallbackDigest(data);
     case 'CwdChanged':
       return str(data.new_cwd) ?? str(data.cwd);
     case 'WorktreeCreate':
@@ -344,17 +412,60 @@ function digest(event: string, data: Json | null): string | null {
     case 'TaskCompleted':
       return str(data.title) ?? str(data.description) ?? str(data.task_id);
     default:
-      // 新增/未知事件的通用兜底: 常见字段里挑一个可读的, 取不到再回退 raw JSON
-      return (
-        str(data.message) ??
-        str(data.title) ??
-        str(data.file_path) ??
-        str(data.path) ??
-        str(data.command) ??
-        str(data.reason) ??
-        null
-      );
+      return fallbackDigest(data);
   }
+}
+
+function batchDigest(calls: unknown): string | null {
+  if (!Array.isArray(calls) || calls.length === 0) return null;
+  const names = calls.map((c) => {
+    const obj = (typeof c === 'object' && c !== null ? c : {}) as Json;
+    return str(obj.tool_name) ?? str(obj.name) ?? 'tool';
+  });
+  return `${names.length} calls: ${names.join(', ')}`;
+}
+
+// 宿主 agent (Claude Code) 在给 hook 的 payload 里就已经截断的内容: 标记
+// `[truncated, N chars total]` 且没有本工具的 `…` 前缀 —— 原文从未出 harness
+// (连宿主自己的 transcript 也只有截断后的版本), 本工具无从获取。必须标出来,
+// 否则会被当成 dashboard 藏了数据。
+const HOST_TRUNC_RE = /(^|[^…])\[truncated, \d+ chars total\]/;
+
+// 两类不完整来源各挂一枚标记:
+// - host-truncated: 上游在 hook 输入端截断 (拿不到, 只能明示)
+// - truncated: 本工具上报时超出单条额度, body 降级成字段骨架 (`_truncated`)
+// 字段级 clip 不额外挂标记 —— 标记就在文本尾部, 自解释。
+function TruncBadge({ pe }: { pe: PE | null }) {
+  if (!pe) return null;
+  const skeleton = pe.data?._truncated === true;
+  const host = HOST_TRUNC_RE.test(pe.status.body);
+  if (!skeleton && !host) return null;
+  const dropped =
+    typeof pe.data?._dropped_keys === 'number' ? (pe.data._dropped_keys as number) : null;
+  return (
+    <>
+      {host && (
+        <span
+          className="text-[10px] font-mono px-1 rounded border border-orange-900 bg-orange-950/60 text-orange-300 shrink-0"
+          title={`宿主 agent 在 hook 输入端就截断了这段内容 (通常是每轮注入的 system-reminder / 长工具输出), 原文未提供给 hook, 本工具无法还原`}
+        >
+          host-truncated
+        </span>
+      )}
+      {skeleton && (
+        <span
+          className="text-[10px] font-mono px-1 rounded border border-amber-900 bg-amber-950/60 text-amber-300 shrink-0"
+          title={
+            dropped !== null
+              ? `上报时超出单条额度, 已降级为字段骨架 (${dropped} 个字段)`
+              : '上报时超出单条额度, 已降级为字段骨架'
+          }
+        >
+          truncated
+        </span>
+      )}
+    </>
+  );
 }
 
 function joinParts(...parts: Array<string | null>): string | null {
@@ -387,6 +498,37 @@ function toolName(data: Json | null): string | null {
 function toolError(data: Json | null): string | null {
   if (!data) return null;
   return str(data.error) ?? str(data.denial_reason) ?? str(data.message);
+}
+
+// 工具输出的可读文本。实测形态: 字符串 / {stdout,stderr,content,...} 对象 /
+// [{type:'text',text}] 数组。取到就单独渲染成文本块 (raw JSON 里换行是转义的,
+// 几乎没法读); 取不到只留 raw。
+function toolResponseText(data: Json | null): string | null {
+  const v = data?.tool_response;
+  if (typeof v === 'string') return v.length > 0 ? v : null;
+  if (Array.isArray(v)) {
+    const joined = v
+      .map((it) => {
+        if (typeof it === 'string') return it;
+        const obj = (typeof it === 'object' && it !== null ? it : {}) as Json;
+        return str(obj.text) ?? '';
+      })
+      .filter((s) => s.length > 0)
+      .join('\n');
+    return joined.length > 0 ? joined : null;
+  }
+  if (typeof v === 'object' && v !== null) {
+    const obj = v as Json;
+    const parts = [
+      str(obj.stdout),
+      str(obj.stderr) && `stderr: ${str(obj.stderr)}`,
+      str(obj.content),
+      str(obj.codeText) ?? str(obj.text),
+      str(obj.result),
+    ].filter((s): s is string => typeof s === 'string' && s.length > 0);
+    return parts.length > 0 ? parts.join('\n') : null;
+  }
+  return null;
 }
 
 function fmtMs(ms: number): string {
@@ -517,11 +659,13 @@ function PromptBlock({ pe, no, duration }: { pe: PE; no: number; duration: strin
 // 工具调用: 一行 = 时间 + 成败 + 工具名 + 关键参数 + 时长; 点击展开 pre/post raw
 function ToolRow({ item, live }: { item: ToolItem; live: boolean }) {
   const [open, setOpen] = useState(false);
+  const [errFull, setErrFull] = useState(false);
   const data = item.pre?.data ?? item.post?.data ?? null;
   const name = toolName(data) ?? 'tool';
   const line = (toolDigest(data) ?? '').split('\n')[0];
   const running = item.post === null;
   const err = item.failed ? toolError(item.post?.data ?? null) : null;
+  const resp = toolResponseText(item.post?.data ?? null);
 
   return (
     <div>
@@ -550,6 +694,7 @@ function ToolRow({ item, live }: { item: ToolItem; live: boolean }) {
           {name}
         </span>
         <span className="text-xs text-zinc-500 truncate min-w-0 flex-1">{line}</span>
+        <TruncBadge pe={item.post ?? item.pre} />
         {item.durationMs !== null && item.durationMs >= 0 && (
           <span className="text-[10px] font-mono text-zinc-600 shrink-0">
             {fmtMs(item.durationMs)}
@@ -560,13 +705,23 @@ function ToolRow({ item, live }: { item: ToolItem; live: boolean }) {
         </span>
       </div>
       {err && (
-        <div className="ml-6 text-xs text-red-300/90 whitespace-pre-wrap break-words line-clamp-4">
+        <div
+          role="button"
+          tabIndex={0}
+          onClick={() => setErrFull((v) => !v)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' || e.key === ' ') setErrFull((v) => !v);
+          }}
+          title={errFull ? 'collapse' : 'show full error'}
+          className={`ml-6 text-xs text-red-300/90 whitespace-pre-wrap break-words cursor-pointer ${errFull ? '' : 'line-clamp-4'}`}
+        >
           {err}
         </div>
       )}
       {open && (
         <div className="ml-6 my-1 space-y-1">
           {item.pre && <RawPre label="PreToolUse" pe={item.pre} />}
+          {resp && <TextPre label="tool_response" text={resp} />}
           {item.post && <RawPre label={item.post.status.event} pe={item.post} />}
         </div>
       )}
@@ -593,6 +748,29 @@ function EventBlock({ pe }: { pe: PE }) {
           </>
         }
         textClass="text-zinc-100"
+      />
+    );
+  }
+  if (e === 'SubagentStop') {
+    // subagent 的最终回复同样是内容, 不该挤在单行里
+    return (
+      <ExpandableBlock
+        pe={pe}
+        text={digest(e, pe.data)}
+        clampClass="line-clamp-[12]"
+        mdClampClass="max-h-80"
+        markdown
+        className="border-l-2 border-cyan-600 bg-cyan-950/20 rounded-r-md my-1.5"
+        header={
+          <>
+            <span className="text-cyan-300 font-semibold">subagent</span>
+            {str(pe.data?.agent_type) && (
+              <span className="text-cyan-500/90">{str(pe.data?.agent_type)}</span>
+            )}
+            <span className="text-zinc-500">{clock(pe.status.created_at)}</span>
+          </>
+        }
+        textClass="text-zinc-200"
       />
     );
   }
@@ -672,6 +850,7 @@ function MinorEventRow({ pe }: { pe: PE }) {
         >
           {e}
         </span>
+        <TruncBadge pe={pe} />
         <span className="text-xs text-zinc-400 truncate min-w-0 flex-1">
           {line?.split('\n')[0] ?? ''}
         </span>
@@ -691,6 +870,23 @@ function MinorEventRow({ pe }: { pe: PE }) {
 // assistant 中间进度文本 (MessageDisplay 分片合并): 淡色块, 与最终回复(绿)区分
 function MsgBlock({ item }: { item: MsgItem }) {
   const text = msgText(item);
+  const [dupOpen, setDupOpen] = useState(false);
+  // 与最终回复同文: 默认折叠成一行 (避免同一段话读两遍), 点开就是完整原文 + raw
+  if (item.dupOfFinal && !dupOpen) {
+    return (
+      <button
+        onClick={() => setDupOpen(true)}
+        className="flex items-baseline gap-2 py-px px-1 -mx-1 rounded hover:bg-zinc-900/70 transition text-[10px] font-mono text-zinc-600 hover:text-zinc-300 w-full text-left"
+      >
+        <span>{clock(item.at)}</span>
+        <span className="px-1 rounded border border-zinc-800 bg-zinc-900">progress</span>
+        <span className="truncate">
+          {item.chunks.length} 个分片 · 内容同下方最终回复 · 点击展开
+        </span>
+        <span className="ml-auto">▸</span>
+      </button>
+    );
+  }
   return (
     <ExpandableBlock
       rawText={JSON.stringify(
@@ -748,6 +944,7 @@ function ExpandableBlock({
     <div className={`px-3 py-2 ${className}`}>
       <div className="flex items-baseline gap-2 text-[10px] font-mono">
         {header}
+        {pe && <TruncBadge pe={pe} />}
         <span className="ml-auto flex items-baseline gap-2 shrink-0">
           {isMd && (
             <button
@@ -814,11 +1011,15 @@ function ExpandableBlock({
 }
 
 function RawPre({ label, pe }: { label: string; pe: PE }) {
+  return <TextPre label={label} text={prettyJson(pe)} />;
+}
+
+function TextPre({ label, text }: { label: string; text: string }) {
   return (
     <div>
       <div className="text-[10px] font-mono text-zinc-600">{label}</div>
       <pre className="text-[11px] leading-relaxed text-zinc-400 bg-zinc-900/60 rounded p-2 overflow-x-auto max-h-96 overflow-y-auto whitespace-pre-wrap break-all">
-        {prettyJson(pe)}
+        {text}
       </pre>
     </div>
   );
