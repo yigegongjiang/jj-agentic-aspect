@@ -9,6 +9,17 @@
 
 > 历史 27 版 (≤ 0.8.23) 在双文件分界确立前写成, 原文照搬未回填; 用户向 / 开发向严格分界自 **0.8.24** 起执行.
 
+## [0.25.0] - 2026-07-30
+
+> 事实基线 (实测 codex-cli 0.146.0): `/goal` 只发 `thread_goal_updated` (rollout transcript event_msg), 不产生 user turn -> 无 UserPromptSubmit; 原生二进制 strings 扫描确认 hook 事件集仍为已接的 11 个, 无 goal 类事件 -> 纯 hook 侧不可得。Stop/UserPromptSubmit payload 的 `transcript_path` 为 null (仅 SessionStart 有)。
+
+### Fixed
+
+- Codex `/goal` 开启的 session 不再无 prompt (dashboard 空标题)。
+  - `cli/src/hook.rs`: 抽出 `upload_event()`; source 含 `codex` 且 event ∈ {Stop, SessionEnd} 时 `report_codex_goal()` -> `codex_rollout_path()` (payload `transcript_path` 优先, 否则按 `$CODEX_HOME`/`~/.codex/sessions` 递归找文件名含 session_id 的 `*.jsonl`, 目录预算 4000, 新日期目录优先) + `codex_goal_objective()` (行内 `thread_goal_updated` 预筛后解析, 取最后一个非空 objective, 文件 > 256MB 跳过), 合成 `event=ThreadGoal`, body 带 `objective` + `_derived_from`。
+  - `worker/src/index.ts`: statuses ingest 对 `ThreadGoal` 做 (project, session, body) 幂等, 命中返回既有行 200; sessions 摘要 `first_prompt` 改 `event IN ('UserPromptSubmit','ThreadGoal')` + `ORDER BY CASE ... END, id` (真实 prompt 优先), 字段 COALESCE 增补 `$.objective`。
+  - `web/components/SessionDetail.tsx`: `digest` / 事件配色新增 `ThreadGoal` (取 `objective`, 与 prompt 同蓝)。
+
 ## [0.24.0] - 2026-07-30
 
 > 排查基线 (实测): Claude Code 官方 30 事件 = 本机 settings.json 30 = `hook --help` 样例 30; Codex 11 全接 -> 事件覆盖无缺口。D1 现状 21 类事件有样本, 最长 session 486 事件 / 674KB, 各事件 payload keys 已逐一核对。

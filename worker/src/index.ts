@@ -1121,6 +1121,21 @@ app.post('/projects/:name/statuses', async (c) => {
     .first<{ project_id: string }>();
   const project = pinned?.project_id ?? name;
 
+  // ThreadGoal is synthesized by the CLI from the Codex rollout transcript and
+  // re-sent on every turn end (see cli/src/hook.rs). Collapse exact repeats so
+  // the timeline shows one entry per distinct goal, not one per turn.
+  if (parsed.value.event === 'ThreadGoal') {
+    const dup = await c.env.DB
+      .prepare(
+        "SELECT id, created_at FROM statuses WHERE project_id = ? AND session_id = ? AND event = 'ThreadGoal' AND body = ? LIMIT 1",
+      )
+      .bind(project, parsed.value.session_id, parsed.value.body)
+      .first<{ id: string; created_at: number }>();
+    if (dup) {
+      return c.json({ ...dup, project_id: project, ...parsed.value }, 200);
+    }
+  }
+
   const id = ulid();
   const t = now();
   await c.env.DB.batch([
@@ -1153,7 +1168,10 @@ app.post('/projects/:name/statuses', async (c) => {
 // via json_extract with a json_valid guard — a client-side-truncated body is
 // still valid JSON, but never let a malformed row break the whole listing.
 // Field name: newer Claude Code sends `user_input`, older sends `prompt`;
-// COALESCE covers both. last_event = the session's most recent event name, so
+// COALESCE covers both. A Codex session opened with `/goal` submits no prompt
+// at all — the CLI recovers the objective as a synthetic ThreadGoal event, used
+// here only when the session has no real prompt.
+// last_event = the session's most recent event name, so
 // the dashboard can tell a finished session (SessionEnd/Stop) from a live one.
 app.get('/projects/:name/sessions', async (c) => {
   const name = c.req.param('name');
@@ -1173,13 +1191,15 @@ app.get('/projects/:name/sessions', async (c) => {
               MIN(s.created_at) AS first_at,
               MAX(s.created_at) AS last_at,
               (SELECT substr(CASE WHEN json_valid(s2.body)
-                             THEN COALESCE(json_extract(s2.body, '$.prompt'), json_extract(s2.body, '$.user_input'))
+                             THEN COALESCE(json_extract(s2.body, '$.prompt'),
+                                           json_extract(s2.body, '$.user_input'),
+                                           json_extract(s2.body, '$.objective'))
                              END, 1, ?)
                  FROM statuses s2
                 WHERE s2.project_id = s.project_id
                   AND s2.session_id = s.session_id
-                  AND s2.event = 'UserPromptSubmit'
-                ORDER BY s2.id
+                  AND s2.event IN ('UserPromptSubmit', 'ThreadGoal')
+                ORDER BY CASE WHEN s2.event = 'UserPromptSubmit' THEN 0 ELSE 1 END, s2.id
                 LIMIT 1) AS first_prompt,
               (SELECT s3.event
                  FROM statuses s3

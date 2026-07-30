@@ -364,6 +364,9 @@ function digest(event: string, data: Json | null): string | null {
   switch (event) {
     case 'UserPromptSubmit':
       return str(data.prompt) ?? str(data.user_input);
+    // 合成事件: codex /goal 的 objective (CLI 从 rollout 回读, 非宿主 hook)
+    case 'ThreadGoal':
+      return str(data.objective);
     case 'Notification':
       return joinParts(str(data.notification_type), str(data.message));
     case 'PermissionRequest':
@@ -818,6 +821,8 @@ function badgeClass(event: string): string {
     case 'TaskCompleted':
       return 'bg-green-950/60 text-green-300 border-green-900';
     case 'UserPromptExpansion':
+    // codex /goal: 人类的真实诉求, 与 prompt 同色
+    case 'ThreadGoal':
       return 'bg-blue-950/60 text-blue-300 border-blue-900';
     case 'PreCompact':
     case 'PostCompact':

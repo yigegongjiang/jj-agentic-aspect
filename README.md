@@ -18,7 +18,7 @@ curl -fsSL https://raw.githubusercontent.com/yigegongjiang/jj-agentic-aspect/mai
 
 一键安装 `jj-agentic-aspect` 到 `$HOME/.local/bin/` (自动清理旧版 `jj-plan`/`jj-ask`/`jj-status` 二进制). 配置 `~/.config/jj-agentic-aspect/config.json` (遵循 XDG, 尊重 `$XDG_CONFIG_HOME`; 旧路径 `~/.config/jj-plan`、`~/.config/jjplan`、`~/.jjplan` 仍作只读 fallback): `endpoint` + Cloudflare Access service token (`cf_access_client_id` + `cf_access_client_secret`). `jj-agentic-aspect --help` 及各子命令 `--help` 查看命令; dashboard 经 Cloudflare Access (Google) 登录.
 
-`hook` 子命令记录 Claude Code / Codex session 运行事件 (source 标注上报方): 在 `~/.claude/settings.json` / `~/.codex/hooks.json` 把各事件指向 `jj-agentic-aspect hook --source claude-code` / `jj-agentic-aspect hook --source codex` (配置样例见 `jj-agentic-aspect hook --help`), 即自动上报, dashboard SESSIONS tab 回看.
+`hook` 子命令记录 Claude Code / Codex session 运行事件 (source 标注上报方): 在 `~/.claude/settings.json` / `~/.codex/hooks.json` 把各事件指向 `jj-agentic-aspect hook --source claude-code` / `jj-agentic-aspect hook --source codex` (配置样例见 `jj-agentic-aspect hook --help`), 即自动上报, dashboard SESSIONS tab 回看. codex `/goal` 不经 hook, CLI 在 Stop/SessionEnd 回读 rollout transcript 合成 `ThreadGoal` 事件补上.
 
 ## 架构
 

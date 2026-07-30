@@ -236,6 +236,124 @@ fn parse_source(args: &[String]) -> String {
     clip(&source.unwrap_or_else(|| DEFAULT_SOURCE.to_string()), MAX_SOURCE_LEN)
 }
 
+/// Codex `/goal <text>` sets the thread objective instead of submitting a user
+/// turn: no UserPromptSubmit hook fires (Codex 0.146 has no goal-related hook
+/// event at all), so a session started that way records no human ask and the
+/// dashboard shows an empty title. The objective *is* written to the rollout
+/// transcript as a `thread_goal_updated` event, so at turn end we read it back
+/// and report it as a synthetic `ThreadGoal` event. The worker dedupes repeats
+/// (same session + same body), so re-reporting every turn is free and a mid-
+/// session `/goal` change still lands as a new event.
+const GOAL_TRIGGER_EVENTS: [&str; 2] = ["Stop", "SessionEnd"];
+const GOAL_MARKER: &str = "thread_goal_updated";
+/// Bounds for the transcript scan — a hook must not stall on a pathological
+/// file or a huge sessions tree.
+const GOAL_MAX_FILE_BYTES: u64 = 256 * 1024 * 1024;
+const GOAL_MAX_DIRS_SCANNED: usize = 4_000;
+
+/// Locate the rollout transcript for `session_id`. Codex passes
+/// `transcript_path` on SessionStart but leaves it null on Stop/SessionEnd, so
+/// fall back to searching the sessions tree — rollout files carry the session
+/// id in their name (`rollout-<ts>-<session_id>.jsonl`).
+fn codex_rollout_path(session_id: &str, payload: &Value) -> Option<std::path::PathBuf> {
+    if let Some(p) = payload.get("transcript_path").and_then(Value::as_str) {
+        let path = std::path::PathBuf::from(p);
+        if !p.is_empty() && path.is_file() {
+            return Some(path);
+        }
+    }
+    let home = std::env::var("CODEX_HOME")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .map(std::path::PathBuf::from)
+        .or_else(|| std::env::var("HOME").ok().map(|h| std::path::Path::new(&h).join(".codex")))?;
+    let mut budget = GOAL_MAX_DIRS_SCANNED;
+    find_rollout(&home.join("sessions"), session_id, &mut budget)
+}
+
+/// Depth-first search for `*<session_id>*.jsonl`, newest directories first
+/// (the tree is year/month/day, so reverse name order == newest first).
+fn find_rollout(dir: &std::path::Path, session_id: &str, budget: &mut usize) -> Option<std::path::PathBuf> {
+    if *budget == 0 {
+        return None;
+    }
+    *budget -= 1;
+    let mut subdirs: Vec<std::path::PathBuf> = Vec::new();
+    for entry in std::fs::read_dir(dir).ok()?.flatten() {
+        let path = entry.path();
+        let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
+        if is_dir {
+            subdirs.push(path);
+            continue;
+        }
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if name.ends_with(".jsonl") && name.contains(session_id) {
+            return Some(path);
+        }
+    }
+    subdirs.sort();
+    for sub in subdirs.into_iter().rev() {
+        if let Some(hit) = find_rollout(&sub, session_id, budget) {
+            return Some(hit);
+        }
+    }
+    None
+}
+
+/// Last non-empty objective recorded in the rollout transcript, if any.
+fn codex_goal_objective(path: &std::path::Path) -> Option<String> {
+    use std::io::BufRead;
+    if std::fs::metadata(path).ok()?.len() > GOAL_MAX_FILE_BYTES {
+        return None;
+    }
+    let reader = std::io::BufReader::new(std::fs::File::open(path).ok()?);
+    let mut objective: Option<String> = None;
+    for line in reader.lines().map_while(Result::ok) {
+        // Cheap pre-filter: only a handful of lines in a rollout are goals.
+        if !line.contains(GOAL_MARKER) {
+            continue;
+        }
+        let Ok(v) = serde_json::from_str::<Value>(&line) else {
+            continue;
+        };
+        let p = v.get("payload").unwrap_or(&Value::Null);
+        if p.get("type").and_then(Value::as_str) != Some(GOAL_MARKER) {
+            continue;
+        }
+        let goal = p.get("goal").unwrap_or(&Value::Null);
+        let text = goal
+            .get("objective")
+            .and_then(Value::as_str)
+            .or_else(|| goal.as_str())
+            .unwrap_or("")
+            .trim();
+        if !text.is_empty() {
+            objective = Some(text.to_string());
+        }
+    }
+    objective
+}
+
+fn report_codex_goal(project: &str, session_id: &str, source: &str, payload: &Value) {
+    let Some(path) = codex_rollout_path(session_id, payload) else {
+        return;
+    };
+    let Some(objective) = codex_goal_objective(&path) else {
+        return;
+    };
+    let body = fit_body(&json!({
+        "hook_event_name": "ThreadGoal",
+        "session_id": session_id,
+        "cwd": payload.get("cwd").cloned().unwrap_or(Value::Null),
+        "objective": objective,
+        // Not a real hook event — say where it came from so the timeline never
+        // implies Codex emitted it.
+        "_derived_from": format!("{GOAL_MARKER} in {}", path.to_string_lossy()),
+    }));
+    upload_event(project, session_id, "ThreadGoal", source, &body);
+}
+
 /// The ingest entry point. Every failure path is a silent `return` — exit 0,
 /// no stdout — because this runs inside someone's live agent session.
 fn run_ingest(source: &str) {
@@ -274,12 +392,21 @@ fn run_ingest(source: &str) {
     };
     let body = fit_body(&payload);
     debug_assert!(len16(&body) <= MAX_STATUS_BODY_LEN);
+    upload_event(&project, &session_id, &event, source, &body);
 
-    let path = format!("/projects/{}/statuses", encode_uri_component(&project));
+    // Codex `/goal` never reaches a hook (see report_codex_goal); recover it
+    // from the rollout transcript once the turn is over.
+    if source.contains("codex") && GOAL_TRIGGER_EVENTS.contains(&event.as_str()) {
+        report_codex_goal(&project, &session_id, source, &payload);
+    }
+}
+
+/// POST one event. One retry: a transient network blip shouldn't cost an event.
+/// Still capped by HOOK_TIMEOUT per attempt and still silent on failure — a
+/// hook must never disturb the hosting session.
+fn upload_event(project: &str, session_id: &str, event: &str, source: &str, body: &str) {
+    let path = format!("/projects/{}/statuses", encode_uri_component(project));
     let upload = json!({ "session_id": session_id, "event": event, "source": source, "body": body });
-    // One retry: a transient network blip shouldn't cost an event. Still capped
-    // by HOOK_TIMEOUT per attempt and still silent on failure — a hook must
-    // never disturb the hosting session.
     if try_api("POST", &path, Some(upload.clone()), Some(HOOK_TIMEOUT)).is_err() {
         let _ = try_api("POST", &path, Some(upload), Some(HOOK_TIMEOUT));
     }
@@ -420,6 +547,9 @@ project (name) -- session (session_id, 来自宿主 agent) -- event (id=ULID, �
 - stdin 非 JSON 也上报 (event=UnparsedPayload, body 带原文), 不静默丢弃; 上传失败自动重试 1 次.
 - 永远 exit 0, 不写 stdout, 上报限时 10s: 任何失败静默丢弃, 绝不干扰宿主 session.
 - 未知 flag 静默忽略 (hook 行配置错误也不得影响宿主).
+- codex 专项: `/goal` 不触发任何 hook (codex 0.146 无 goal 事件). Stop/SessionEnd 时回读 rollout transcript
+  的 thread_goal_updated, 合成 event=ThreadGoal 上报 (body.objective + _derived_from); 同 body 重复由 worker 折叠.
+  session 摘要 first_prompt 在无 UserPromptSubmit 时回退到该 objective.
 
 # 配置: Claude Code (~/.claude/settings.json; 全事件集 = Claude Code 2.1.220 实测支持; 事件集可按需增删, 未知事件同样原样落盘)
 # MessageDisplay = assistant 中间进度文本 (payload: message_id/index/final/delta, delta 按 message_id+index 拼接)
