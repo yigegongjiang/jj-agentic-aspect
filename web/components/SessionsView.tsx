@@ -73,7 +73,9 @@ function SessionCard({
           <span className={`${state.text} shrink-0`}>{state.label}</span>
           <span className="truncate">
             · {fmtRelative(session.last_at)} · <span className="text-zinc-500">{session.source}</span> ·{' '}
-            {fmtDuration(session.last_at - session.first_at)} · {session.events_count} ev
+            {fmtDuration(session.last_at - session.first_at)} · {session.turns_count}t ·{' '}
+            {session.tools_count} tools · {session.events_count} ev
+            {session.errors_count > 0 ? ` · ${session.errors_count} errors` : ''}
           </span>
         </span>
         <div className="flex items-center gap-0.5 shrink-0">

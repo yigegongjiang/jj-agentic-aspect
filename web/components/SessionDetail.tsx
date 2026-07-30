@@ -76,12 +76,36 @@ export default function SessionDetail({ project, sessionId, onUnauthorized }: Pr
 
   const parsed = events.map((s) => ({ status: s, data: parseBody(s.body) }));
   const { turns, toolCount, errorCount } = buildTimeline(parsed);
-  const promptTurns = turns.filter((t) => t.prompt !== null).length;
+  const promptTurns = Math.max(
+    turns.filter((t) => t.prompt !== null).length,
+    parsed.filter((p) => p.status.event === 'CodexTurnSummary').length,
+    parsed.some((p) => p.status.event === 'ThreadGoal') ? 1 : 0,
+  );
   const first = events[0];
   const last = events[events.length - 1];
-  const state = sessionState(last.event, last.created_at);
+  const lastNative =
+    [...events]
+      .reverse()
+      .find((e) => e.event !== 'ThreadGoal' && e.event !== 'CodexTurnSummary') ?? last;
+  const state = sessionState(lastNative.event, lastNative.created_at);
   const stateStyle = STATE_STYLE[state];
   const model = parsed.map((p) => str(p.data?.model)).find((m) => m !== null) ?? null;
+  const codexSummary =
+    [...parsed].reverse().find((p) => p.status.event === 'CodexTurnSummary')?.data ?? null;
+  const effort =
+    str(codexSummary?.effort) ??
+    parsed.map((p) => str(p.data?.effort)).find((v) => v !== null) ??
+    null;
+  const permissionMode =
+    parsed.map((p) => str(p.data?.permission_mode)).find((v) => v !== null) ?? null;
+  const codexVersion = str(codexSummary?.codex_cli_version);
+  const sessionTokens = nestedNumber(codexSummary?.session_token_usage, 'total_tokens');
+  const contextUsed = number(codexSummary?.context_used_tokens);
+  const contextWindow = number(codexSummary?.model_context_window);
+  const contextPercent =
+    contextUsed !== null && contextWindow !== null && contextWindow > 0
+      ? Math.round((contextUsed / contextWindow) * 100)
+      : null;
   let promptNo = 0;
 
   return (
@@ -94,6 +118,25 @@ export default function SessionDetail({ project, sessionId, onUnauthorized }: Pr
         </span>
         <span className="text-zinc-400">{first.source}</span>
         {model && <span className="text-zinc-400">{model}</span>}
+        {effort && <span className="text-zinc-500">effort:{effort}</span>}
+        {permissionMode && (
+          <span
+            className={
+              permissionMode === 'bypassPermissions' ? 'text-amber-300' : 'text-zinc-500'
+            }
+          >
+            perm:{permissionMode}
+          </span>
+        )}
+        {codexVersion && <span className="text-zinc-500">codex:{codexVersion}</span>}
+        {sessionTokens !== null && (
+          <span className="text-zinc-400">session:{fmtTokens(sessionTokens)} tok</span>
+        )}
+        {contextPercent !== null && (
+          <span className={contextPercent >= 80 ? 'text-amber-300' : 'text-zinc-400'}>
+            ctx:{contextPercent}%
+          </span>
+        )}
         <span className="text-zinc-500">{fmtTime(first.created_at)}</span>
         <span className="text-zinc-500">{fmtDuration(last.created_at - first.created_at)}</span>
         <span className="text-zinc-400">
@@ -253,6 +296,27 @@ function buildTimeline(events: PE[]): { turns: Turn[]; toolCount: number; errorC
       }
       continue;
     }
+    if (e === 'CodexTurnSummary') {
+      const item: EventItem = {
+        kind: 'event',
+        key: pe.status.id,
+        at: pe.status.created_at,
+        ev: pe,
+      };
+      // Native Stop uploads first for durability; present derived commentary
+      // before the final answer where it occurred semantically.
+      let stopIndex = -1;
+      for (let i = current.items.length - 1; i >= 0; i--) {
+        const existing = current.items[i];
+        if (existing.kind === 'event' && existing.ev.status.event === 'Stop') {
+          stopIndex = i;
+          break;
+        }
+      }
+      if (stopIndex >= 0) current.items.splice(stopIndex, 0, item);
+      else current.items.push(item);
+      continue;
+    }
     if (e === 'Stop') {
       // 末条进度块 = 最终回复本身 (Stop 绿块已展示) → 标记为重复, 折叠成一行,
       // 不删除: 删掉就等于时间线上少了一条真实事件。
@@ -319,6 +383,52 @@ function str(v: unknown): string | null {
   return typeof v === 'string' && v.length > 0 ? v : null;
 }
 
+function number(v: unknown): number | null {
+  return typeof v === 'number' && Number.isFinite(v) ? v : null;
+}
+
+function nestedNumber(v: unknown, key: string): number | null {
+  if (typeof v !== 'object' || v === null || Array.isArray(v)) return null;
+  return number((v as Json)[key]);
+}
+
+function fmtTokens(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(n >= 10_000_000 ? 0 : 1)}M`;
+  if (n >= 1_000) return `${(n / 1_000).toFixed(n >= 100_000 ? 0 : 1)}K`;
+  return String(Math.round(n));
+}
+
+function codexSummaryMeta(data: Json | null): string[] {
+  if (!data) return [];
+  const parts: string[] = [];
+  const effort = str(data.effort);
+  if (effort) parts.push(`effort:${effort}`);
+  const usage = data.turn_token_usage;
+  const total = nestedNumber(usage, 'total_tokens');
+  if (total !== null) parts.push(`${fmtTokens(total)} tok`);
+  const input = nestedNumber(usage, 'input_tokens');
+  const cached = nestedNumber(usage, 'cached_input_tokens');
+  if (input !== null && input > 0 && cached !== null) {
+    parts.push(`${Math.round((cached / input) * 100)}% cached`);
+  }
+  const used = number(data.context_used_tokens);
+  const window = number(data.model_context_window);
+  if (used !== null && window !== null && window > 0) {
+    parts.push(`${Math.round((used / window) * 100)}% ctx`);
+  }
+  return parts;
+}
+
+function codexProgress(data: Json | null): string[] {
+  if (!data || !Array.isArray(data.progress)) return [];
+  return data.progress
+    .map((item) => {
+      if (typeof item !== 'object' || item === null || Array.isArray(item)) return null;
+      return str((item as Json).message);
+    })
+    .filter((message): message is string => message !== null);
+}
+
 // 每条事件都带的信封字段: 摘要里没有信息量 (session/turn 标识、运行态), 且概览条已显示
 const ENVELOPE_KEYS = new Set([
   'hook_event_name',
@@ -367,6 +477,13 @@ function digest(event: string, data: Json | null): string | null {
     // 合成事件: codex /goal 的 objective (CLI 从 rollout 回读, 非宿主 hook)
     case 'ThreadGoal':
       return str(data.objective);
+    case 'CodexTurnSummary': {
+      const progress = codexProgress(data);
+      return joinParts(
+        progress.length > 0 ? `${progress.length} progress updates` : null,
+        ...codexSummaryMeta(data),
+      );
+    }
     case 'Notification':
       return joinParts(str(data.notification_type), str(data.message));
     case 'PermissionRequest':
@@ -558,7 +675,12 @@ function isKeyEvent(item: Item): boolean {
   if (item.kind === 'tool') return item.failed;
   if (item.kind === 'msg') return false;
   const e = item.ev.status.event;
-  return e === 'Stop' || e === 'StopFailure' || e === 'PermissionDenied';
+  return (
+    e === 'Stop' ||
+    e === 'StopFailure' ||
+    e === 'PermissionDenied' ||
+    e === 'CodexTurnSummary'
+  );
 }
 
 // 活跃指示文案: 由最后一个 item 推断当前阶段 (thinking 无 hook 事件, 只能推断)
@@ -732,9 +854,43 @@ function ToolRow({ item, live }: { item: ToolItem; live: boolean }) {
   );
 }
 
+// Codex 没有 MessageDisplay hook: CLI 在 Stop 时从 rollout 防御性补一条 turn 摘要。
+function CodexTurnSummaryBlock({ pe }: { pe: PE }) {
+  const progress = codexProgress(pe.data);
+  const meta = codexSummaryMeta(pe.data);
+  return (
+    <ExpandableBlock
+      pe={pe}
+      text={progress.length > 0 ? progress.join('\n\n') : 'no commentary'}
+      clampClass="line-clamp-8"
+      mdClampClass="max-h-64"
+      markdown
+      className="border-l-2 border-violet-700 bg-violet-950/15 rounded-r-md my-1"
+      header={
+        <>
+          <span className="text-violet-300 font-semibold">assistant · progress</span>
+          <span className="text-violet-500/80">derived</span>
+          {progress.length > 0 && (
+            <span className="text-zinc-500">{progress.length} updates</span>
+          )}
+          {meta.map((part) => (
+            <span key={part} className="text-zinc-500">
+              {part}
+            </span>
+          ))}
+        </>
+      }
+      textClass="text-zinc-300"
+    />
+  );
+}
+
 // 非工具事件: Stop=assistant 回复(绿), StopFailure(红), 开场/收尾=灰单行, 其余=badge 行
 function EventBlock({ pe }: { pe: PE }) {
   const e = pe.status.event;
+  if (e === 'CodexTurnSummary') {
+    return <CodexTurnSummaryBlock pe={pe} />;
+  }
   if (e === 'Stop') {
     return (
       <ExpandableBlock
@@ -824,6 +980,8 @@ function badgeClass(event: string): string {
     // codex /goal: 人类的真实诉求, 与 prompt 同色
     case 'ThreadGoal':
       return 'bg-blue-950/60 text-blue-300 border-blue-900';
+    case 'CodexTurnSummary':
+      return 'bg-violet-950/60 text-violet-300 border-violet-900';
     case 'PreCompact':
     case 'PostCompact':
       return 'bg-orange-950/60 text-orange-300 border-orange-900';

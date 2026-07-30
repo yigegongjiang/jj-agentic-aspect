@@ -9,6 +9,23 @@
 
 > 历史 27 版 (≤ 0.8.23) 在双文件分界确立前写成, 原文照搬未回填; 用户向 / 开发向严格分界自 **0.8.24** 起执行.
 
+## [0.26.0] - 2026-07-30
+
+> 基线: Codex 0.146.0 官方 11 个 hook 已全接; 官方 hook 有 prompt/tool/final response, 无 commentary/token event; rollout transcript 明确非稳定接口.
+
+### Added
+
+- Codex 每轮结束后补采终端 commentary、effort、token/cache/context 与 CLI 版本; 页面以 `derived` 明示来源, rollout 格式变化时自动降级且不影响原生 hook.
+  - `cli/src/hook.rs`: Stop 原生事件优先上报; `CodexTurnSummary` 单次白名单扫描匹配 `turn_id`, 只取 `agent_message` commentary / `turn_context` 安全元数据 / `token_count`, 排除 final answer, 256MB/4000 目录预算不变; parser drift -> `None`.
+  - `worker/src/index.ts`: `CodexTurnSummary` exact-body 幂等; `last_event` 忽略 derived tail, 保持 idle/ended 推断.
+  - `web/components/SessionDetail.tsx`: derived progress 置于 Stop 前展示; 每轮显示 token/cache/context, raw 保留完整来源标记.
+
+### Changed
+
+- session 列表新增 turns/tools/errors, 避免用各 agent 粒度不同的原始 event 数误判工作量; 详情页新增 permission mode、Codex 版本、session token 与 context 占用.
+  - sessions API 聚合 `turns_count` / `tools_count` / `errors_count`; 兼容旧字段且无需 migration.
+  - detail header 从原生 hook 取 `permission_mode`, 从最新 turn summary 取 CLI/usage/context; `bypassPermissions` 与 context ≥80% 高亮.
+
 ## [0.25.0] - 2026-07-30
 
 > 事实基线 (实测 codex-cli 0.146.0): `/goal` 只发 `thread_goal_updated` (rollout transcript event_msg), 不产生 user turn -> 无 UserPromptSubmit; 原生二进制 strings 扫描确认 hook 事件集仍为已接的 11 个, 无 goal 类事件 -> 纯 hook 侧不可得。Stop/UserPromptSubmit payload 的 `transcript_path` 为 null (仅 SessionStart 有)。

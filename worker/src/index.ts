@@ -76,6 +76,9 @@ interface SessionSummary {
   session_id: string;
   source: string;
   events_count: number;
+  turns_count: number;
+  tools_count: number;
+  errors_count: number;
   first_at: number;
   last_at: number;
   first_prompt: string | null;
@@ -1121,15 +1124,14 @@ app.post('/projects/:name/statuses', async (c) => {
     .first<{ project_id: string }>();
   const project = pinned?.project_id ?? name;
 
-  // ThreadGoal is synthesized by the CLI from the Codex rollout transcript and
-  // re-sent on every turn end (see cli/src/hook.rs). Collapse exact repeats so
-  // the timeline shows one entry per distinct goal, not one per turn.
-  if (parsed.value.event === 'ThreadGoal') {
+  // Rollout-derived Codex events may be retried/replayed. Exact-body dedupe
+  // keeps ingestion idempotent without changing native hook-event semantics.
+  if (parsed.value.event === 'ThreadGoal' || parsed.value.event === 'CodexTurnSummary') {
     const dup = await c.env.DB
       .prepare(
-        "SELECT id, created_at FROM statuses WHERE project_id = ? AND session_id = ? AND event = 'ThreadGoal' AND body = ? LIMIT 1",
+        'SELECT id, created_at FROM statuses WHERE project_id = ? AND session_id = ? AND event = ? AND body = ? LIMIT 1',
       )
-      .bind(project, parsed.value.session_id, parsed.value.body)
+      .bind(project, parsed.value.session_id, parsed.value.event, parsed.value.body)
       .first<{ id: string; created_at: number }>();
     if (dup) {
       return c.json({ ...dup, project_id: project, ...parsed.value }, 200);
@@ -1188,6 +1190,12 @@ app.get('/projects/:name/sessions', async (c) => {
       `SELECT s.session_id,
               MIN(s.source) AS source,
               COUNT(*) AS events_count,
+              MAX(SUM(CASE WHEN s.event = 'UserPromptSubmit' THEN 1 ELSE 0 END),
+                  SUM(CASE WHEN s.event = 'CodexTurnSummary' THEN 1 ELSE 0 END),
+                  SUM(CASE WHEN s.event = 'ThreadGoal' THEN 1 ELSE 0 END)) AS turns_count,
+              SUM(CASE WHEN s.event = 'PreToolUse' THEN 1 ELSE 0 END) AS tools_count,
+              SUM(CASE WHEN s.event IN ('StopFailure', 'PostToolUseFailure', 'PermissionDenied')
+                       THEN 1 ELSE 0 END) AS errors_count,
               MIN(s.created_at) AS first_at,
               MAX(s.created_at) AS last_at,
               (SELECT substr(CASE WHEN json_valid(s2.body)
@@ -1205,7 +1213,9 @@ app.get('/projects/:name/sessions', async (c) => {
                  FROM statuses s3
                 WHERE s3.project_id = s.project_id
                   AND s3.session_id = s.session_id
-                ORDER BY s3.id DESC
+                ORDER BY CASE WHEN s3.event IN ('ThreadGoal', 'CodexTurnSummary')
+                              THEN 1 ELSE 0 END,
+                         s3.id DESC
                 LIMIT 1) AS last_event
          FROM statuses s
         WHERE s.project_id = ?

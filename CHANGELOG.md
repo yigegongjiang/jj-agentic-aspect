@@ -13,6 +13,16 @@
 
 > 历史 27 版 (≤ 0.8.23) 在双文件分界确立前写成, 含文件/函数级细节, 原文照搬未回填; 用户向精简严格自 **0.8.24** 起执行.
 
+## [0.26.0] - 2026-07-30
+
+### Added
+
+- Codex 每轮结束后补采终端 commentary、effort、token/cache/context 与 CLI 版本; 页面以 `derived` 明示来源, rollout 格式变化时自动降级且不影响原生 hook.
+
+### Changed
+
+- session 列表新增 turns/tools/errors, 避免用各 agent 粒度不同的原始 event 数误判工作量; 详情页新增 permission mode、Codex 版本、session token 与 context 占用.
+
 ## [0.25.0] - 2026-07-30
 
 ### Fixed

@@ -57,6 +57,9 @@ export interface SessionSummary {
   session_id: string;
   source: string;
   events_count: number;
+  turns_count: number;
+  tools_count: number;
+  errors_count: number;
   first_at: number;
   last_at: number;
   first_prompt: string | null;
